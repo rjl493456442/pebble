@@ -207,13 +207,13 @@ type commitEnv struct {
 // that committing of that unapplied batch will eventually find our (applied)
 // batch in the queue. See commitPipeline.publish for additional commentary.
 type commitPipeline struct {
+	// Queue of pending batches to commit.
+	pending commitQueue
 	env commitEnv
 	sem chan struct{}
 	// The mutex to use for synchronizing access to logSeqNum and serializing
 	// calls to commitEnv.write().
 	mu sync.Mutex
-	// Queue of pending batches to commit.
-	pending commitQueue
 }
 
 func newCommitPipeline(env commitEnv) *commitPipeline {
