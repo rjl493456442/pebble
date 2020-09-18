@@ -160,6 +160,26 @@ type Writer interface {
 //		Comparer: myComparer,
 //	})
 type DB struct {
+	// WARNING: The following fields are accessed atomically.
+	// On 32 bit platforms, only 64-bit aligned fields can be atomic. The struct is
+	// guaranteed to be so aligned, so take advantage of that. For more information,
+	// see https://golang.org/pkg/sync/atomic/#pkg-note-BUG.
+
+	// The count and size of referenced memtables. This includes memtables
+	// present in DB.mu.mem.queue, as well as memtables that have been flushed
+	// but are still referenced by an inuse readState.
+	memTableCount    int64
+	memTableReserved int64 // number of bytes reserved in the cache for memtables
+
+	// bytesFlushed is the number of bytes flushed in the current flush. This
+	// must be read/written atomically since it is accessed by both the flush
+	// and compaction routines.
+	bytesFlushed uint64
+	// bytesCompacted is the number of bytes compacted in the current compaction.
+	// This is used as a dummy variable to increment during compaction, and the
+	// value is not used anywhere.
+	bytesCompacted uint64
+
 	cacheID        uint64
 	dirname        string
 	walDirname     string
@@ -190,7 +210,6 @@ type DB struct {
 		sync.RWMutex
 		val *readState
 	}
-
 	// logRecycler holds a set of log file numbers that are available for
 	// reuse. Writing to a recycled log file is faster than to a new log file on
 	// some common filesystems (xfs, and ext3/4) due to avoiding metadata
@@ -200,24 +219,8 @@ type DB struct {
 	closed   atomic.Value
 	closedCh chan struct{}
 
-	// The count and size of referenced memtables. This includes memtables
-	// present in DB.mu.mem.queue, as well as memtables that have been flushed
-	// but are still referenced by an inuse readState.
-	memTableCount    int64
-	memTableReserved int64 // number of bytes reserved in the cache for memtables
-
 	compactionLimiter limiter
-
-	// bytesFlushed is the number of bytes flushed in the current flush. This
-	// must be read/written atomically since it is accessed by both the flush
-	// and compaction routines.
-	bytesFlushed uint64
-	// bytesCompacted is the number of bytes compacted in the current compaction.
-	// This is used as a dummy variable to increment during compaction, and the
-	// value is not used anywhere.
-	bytesCompacted uint64
-
-	flushLimiter limiter
+	flushLimiter      limiter
 
 	// The main mutex protecting internal DB state. This mutex encompasses many
 	// fields because those fields need to be accessed and updated atomically. In
@@ -930,7 +933,7 @@ func (d *DB) Compact(
 
 	iStart := base.MakeInternalKey(start, InternalKeySeqNumMax, InternalKeyKindMax)
 	iEnd := base.MakeInternalKey(end, 0, 0)
-	meta := []*fileMetadata{&fileMetadata{Smallest: iStart, Largest: iEnd}}
+	meta := []*fileMetadata{{Smallest: iStart, Largest: iEnd}}
 
 	d.mu.Lock()
 	maxLevelWithFiles := 1
