@@ -19,6 +19,7 @@ package rawalloc
 // guarantees that the backing memory for the slice is initialized to zero. Use
 // carefully.
 func New(len, cap int) []byte {
-	ptr := mallocgc(uintptr(cap), nil, false)
-	return (*[maxArrayLen]byte)(ptr)[:len:cap]
+	return make([]byte, len, cap)
+	//ptr := mallocgc(uintptr(cap), nil, false)
+	//return (*[maxArrayLen]byte)(ptr)[:len:cap]
 }
