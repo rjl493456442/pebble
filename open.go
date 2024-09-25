@@ -208,7 +208,6 @@ func Open(dirname string, opts *Options) (db *DB, err error) {
 	} else {
 		opts.Cache.Ref()
 	}
-
 	d := &DB{
 		cacheID:             opts.Cache.NewID(),
 		dirname:             dirname,
@@ -224,6 +223,7 @@ func Open(dirname string, opts *Options) (db *DB, err error) {
 		closed:              new(atomic.Value),
 		closedCh:            make(chan struct{}),
 	}
+	fmt.Println("LargeBatchThreshold", d.largeBatchThreshold)
 	d.mu.versions = &versionSet{}
 	d.diskAvailBytes.Store(math.MaxUint64)
 

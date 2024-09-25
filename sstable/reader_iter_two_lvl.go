@@ -70,7 +70,7 @@ func (i *twoLevelIterator[I, PI, D, PD]) loadIndex(dir int8) loadBlockResult {
 		// blockIntersects
 	}
 	ctx := objiotracing.WithBlockType(i.secondLevel.ctx, objiotracing.MetadataBlock)
-	indexBlock, err := i.secondLevel.reader.readBlock(
+	indexBlock, err := i.secondLevel.reader.readBlock2(
 		ctx, bhp.Handle, nil /* transform */, i.secondLevel.indexFilterRH, i.secondLevel.stats, &i.secondLevel.iterStats, i.secondLevel.bufferPool)
 	if err == nil {
 		err = PI(&i.secondLevel.index).InitHandle(i.secondLevel.cmp, i.secondLevel.reader.Split, indexBlock, i.secondLevel.transforms)

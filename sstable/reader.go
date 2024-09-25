@@ -47,7 +47,8 @@ type blockTransform func([]byte) ([]byte, error)
 
 // Reader is a table reader.
 type Reader struct {
-	readable objstorage.Readable
+	compaction bool
+	readable   objstorage.Readable
 
 	// The following fields are copied from the ReadOptions.
 	cacheOpts            sstableinternal.CacheOptions
@@ -349,6 +350,119 @@ func DeterministicReadBlockDurationForTesting() func() {
 }
 
 var deterministicReadBlockDurationForTesting = false
+
+func (r *Reader) readBlock2(
+	ctx context.Context,
+	bh block.Handle,
+	transform blockTransform,
+	readHandle objstorage.ReadHandle,
+	stats *base.InternalIteratorStats,
+	iterStats *iterStatsAccumulator,
+	bufferPool *block.BufferPool,
+) (handle block.BufferHandle, _ error) {
+	//if h := r.cacheOpts.Cache.Get(r.cacheOpts.CacheID, r.cacheOpts.FileNum, bh.Offset); h.Get() != nil {
+	//	// Cache hit.
+	//	if readHandle != nil {
+	//		readHandle.RecordCacheHit(ctx, int64(bh.Offset), int64(bh.Length+block.TrailerLen))
+	//	}
+	//	if stats != nil {
+	//		stats.BlockBytes += bh.Length
+	//		stats.BlockBytesInCache += bh.Length
+	//	}
+	//	if iterStats != nil {
+	//		iterStats.reportStats(bh.Length, bh.Length, 0)
+	//	}
+	//	// This block is already in the cache; return a handle to existing vlaue
+	//	// in the cache.
+	//	return block.CacheBufferHandle(h), nil
+	//}
+
+	// Cache miss.
+
+	if sema := r.loadBlockSema; sema != nil {
+		if err := sema.Acquire(ctx, 1); err != nil {
+			// An error here can only come from the context.
+			return block.BufferHandle{}, err
+		}
+		defer sema.Release(1)
+	}
+
+	compressed := block.Alloc(int(bh.Length+block.TrailerLen), bufferPool)
+	readStopwatch := makeStopwatch()
+	var err error
+	if readHandle != nil {
+		err = readHandle.ReadAt(ctx, compressed.Get(), int64(bh.Offset))
+	} else {
+		err = r.readable.ReadAt(ctx, compressed.Get(), int64(bh.Offset))
+	}
+	readDuration := readStopwatch.stop()
+	// Call IsTracingEnabled to avoid the allocations of boxing integers into an
+	// interface{}, unless necessary.
+	if readDuration >= slowReadTracingThreshold && r.logger.IsTracingEnabled(ctx) {
+		_, file1, line1, _ := runtime.Caller(1)
+		_, file2, line2, _ := runtime.Caller(2)
+		r.logger.Eventf(ctx, "reading block of %d bytes took %s (fileNum=%s; %s/%s:%d -> %s/%s:%d)",
+			int(bh.Length+block.TrailerLen), readDuration.String(),
+			r.cacheOpts.FileNum,
+			filepath.Base(filepath.Dir(file2)), filepath.Base(file2), line2,
+			filepath.Base(filepath.Dir(file1)), filepath.Base(file1), line1)
+	}
+	if stats != nil {
+		stats.BlockBytes += bh.Length
+		stats.BlockReadDuration += readDuration
+	}
+	if err != nil {
+		compressed.Release()
+		return block.BufferHandle{}, err
+	}
+	if err := checkChecksum(r.checksumType, compressed.Get(), bh, r.cacheOpts.FileNum); err != nil {
+		compressed.Release()
+		return block.BufferHandle{}, err
+	}
+
+	typ := block.CompressionIndicator(compressed.Get()[bh.Length])
+	compressed.Truncate(int(bh.Length))
+
+	var decompressed block.Value
+	if typ == block.NoCompressionIndicator {
+		decompressed = compressed
+	} else {
+		// Decode the length of the decompressed value.
+		decodedLen, prefixLen, err := block.DecompressedLen(typ, compressed.Get())
+		if err != nil {
+			compressed.Release()
+			return block.BufferHandle{}, err
+		}
+
+		decompressed = block.Alloc(decodedLen, bufferPool)
+		if err := block.DecompressInto(typ, compressed.Get()[prefixLen:], decompressed.Get()); err != nil {
+			compressed.Release()
+			return block.BufferHandle{}, err
+		}
+		compressed.Release()
+	}
+
+	if transform != nil {
+		// Transforming blocks is very rare, so the extra copy of the
+		// transformed data is not problematic.
+		tmpTransformed, err := transform(decompressed.Get())
+		if err != nil {
+			decompressed.Release()
+			return block.BufferHandle{}, err
+		}
+
+		transformed := block.Alloc(len(tmpTransformed), bufferPool)
+		copy(transformed.Get(), tmpTransformed)
+		decompressed.Release()
+		decompressed = transformed
+	}
+
+	if iterStats != nil {
+		iterStats.reportStats(bh.Length, 0, readDuration)
+	}
+	h := decompressed.MakeHandle(r.cacheOpts.Cache, r.cacheOpts.CacheID, r.cacheOpts.FileNum, bh.Offset)
+	return h, nil
+}
 
 func (r *Reader) readBlock(
 	ctx context.Context,

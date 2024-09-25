@@ -509,7 +509,7 @@ func (i *singleLevelIterator[I, PI, P, PD]) loadBlock(dir int8) loadBlockResult 
 		// blockIntersects
 	}
 	ctx := objiotracing.WithBlockType(i.ctx, objiotracing.DataBlock)
-	block, err := i.reader.readBlock(
+	block, err := i.reader.readBlock2(
 		ctx, i.dataBH, nil /* transform */, i.dataRH, i.stats, &i.iterStats, i.bufferPool)
 	if err != nil {
 		i.err = err
@@ -531,7 +531,7 @@ func (i *singleLevelIterator[I, PI, D, PD]) readBlockForVBR(
 	h block.Handle, stats *base.InternalIteratorStats,
 ) (block.BufferHandle, error) {
 	ctx := objiotracing.WithBlockType(i.ctx, objiotracing.ValueBlock)
-	return i.reader.readBlock(ctx, h, nil, i.vbRH, stats, &i.iterStats, i.bufferPool)
+	return i.reader.readBlock2(ctx, h, nil, i.vbRH, stats, &i.iterStats, i.bufferPool)
 }
 
 // resolveMaybeExcluded is invoked when the block-property filterer has found
