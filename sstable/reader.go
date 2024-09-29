@@ -191,6 +191,7 @@ type CommonReader interface {
 		bytesIterated *uint64,
 		rp ReaderProvider,
 		bufferPool *BufferPool,
+		stats *base.InternalIteratorStats,
 	) (Iterator, error)
 	EstimateDiskUsage(start, end []byte) (uint64, error)
 	CommonProperties() *CommonProperties
@@ -198,6 +199,7 @@ type CommonReader interface {
 
 // Reader is a table reader.
 type Reader struct {
+	compaction        bool
 	readable          objstorage.Readable
 	cacheID           uint64
 	fileNum           base.DiskFileNum
@@ -346,13 +348,13 @@ func (r *Reader) NewIter(lower, upper []byte) (Iterator, error) {
 // the number of bytes iterated. If an error occurs, NewCompactionIter cleans up
 // after itself and returns a nil iterator.
 func (r *Reader) NewCompactionIter(
-	bytesIterated *uint64, rp ReaderProvider, bufferPool *BufferPool,
+	bytesIterated *uint64, rp ReaderProvider, bufferPool *BufferPool, stats *base.InternalIteratorStats,
 ) (Iterator, error) {
-	return r.newCompactionIter(bytesIterated, rp, nil, bufferPool)
+	return r.newCompactionIter(bytesIterated, rp, nil, bufferPool, stats)
 }
 
 func (r *Reader) newCompactionIter(
-	bytesIterated *uint64, rp ReaderProvider, v *virtualState, bufferPool *BufferPool,
+	bytesIterated *uint64, rp ReaderProvider, v *virtualState, bufferPool *BufferPool, stats *base.InternalIteratorStats,
 ) (Iterator, error) {
 	if r.Properties.IndexType == twoLevelIndex {
 		i := twoLevelIterPool.Get().(*twoLevelIterator)
@@ -360,7 +362,7 @@ func (r *Reader) newCompactionIter(
 			context.Background(),
 			r, v, nil /* lower */, nil /* upper */, nil,
 			false /* useFilter */, v != nil && v.isForeign, /* hideObsoletePoints */
-			nil /* stats */, rp, bufferPool,
+			stats /* stats */, rp, bufferPool,
 		)
 		if err != nil {
 			return nil, err
@@ -516,6 +518,13 @@ func (b cacheValueOrBuf) truncate(n int) {
 	}
 }
 
+// 1 = index block
+// 2 = filter block
+// 3 = range del block
+// 4 = range key block
+// 5 = meta index block
+// 6 = data block
+
 func (r *Reader) readBlock(
 	ctx context.Context,
 	bh BlockHandle,
@@ -531,7 +540,8 @@ func (r *Reader) readBlock(
 		}
 		if stats != nil {
 			stats.BlockBytes += bh.Length
-			stats.BlockBytesInCache += bh.Length
+			stats.BlockBytesCache += bh.Length
+			stats.CacheTypes = append(stats.CacheTypes, uint8(objiotracing.GetBlockType(ctx)))
 		}
 		// This block is already in the cache; return a handle to existing vlaue
 		// in the cache.
@@ -560,12 +570,34 @@ func (r *Reader) readBlock(
 	}
 
 	readStartTime := time.Now()
+
 	var err error
 	if readHandle != nil {
 		err = readHandle.ReadAt(ctx, compressed.get(), int64(bh.Offset))
 	} else {
 		err = r.readable.ReadAt(ctx, compressed.get(), int64(bh.Offset))
 	}
+
+	//var err error
+	//if rlist := r.opts.ReadList; rlist != nil {
+	//	var xx readlist.Reader
+	//	if readHandle != nil {
+	//		xx = readHandle
+	//	} else {
+	//		xx = r.readable
+	//	}
+	//	if r.compaction {
+	//		err = rlist.CompRead(ctx, compressed.get(), int64(bh.Offset), xx)
+	//	} else {
+	//		err = rlist.Read(ctx, compressed.get(), int64(bh.Offset), xx)
+	//	}
+	//} else {
+	//	if readHandle != nil {
+	//		err = readHandle.ReadAt(ctx, compressed.get(), int64(bh.Offset))
+	//	} else {
+	//		err = r.readable.ReadAt(ctx, compressed.get(), int64(bh.Offset))
+	//	}
+	//}
 	readDuration := time.Since(readStartTime)
 	// TODO(sumeer): should the threshold be configurable.
 	const slowReadTracingThreshold = 5 * time.Millisecond
@@ -582,6 +614,9 @@ func (r *Reader) readBlock(
 	if stats != nil {
 		stats.BlockBytes += bh.Length
 		stats.BlockReadDuration += readDuration
+		stats.BlockReadCount += 1
+		stats.BlockReadDurations = append(stats.BlockReadDurations, readDuration)
+		stats.DiskTypes = append(stats.DiskTypes, uint8(objiotracing.GetBlockType(ctx)))
 	}
 	if err != nil {
 		compressed.release()
@@ -592,15 +627,15 @@ func (r *Reader) readBlock(
 		return bufferHandle{}, err
 	}
 
-	typ := blockType(compressed.get()[bh.Length])
+	btyp := blockType(compressed.get()[bh.Length])
 	compressed.truncate(int(bh.Length))
 
 	var decompressed cacheValueOrBuf
-	if typ == noCompressionBlockType {
+	if btyp == noCompressionBlockType {
 		decompressed = compressed
 	} else {
 		// Decode the length of the decompressed value.
-		decodedLen, prefixLen, err := decompressedLen(typ, compressed.get())
+		decodedLen, prefixLen, err := decompressedLen(btyp, compressed.get())
 		if err != nil {
 			compressed.release()
 			return bufferHandle{}, err
@@ -611,7 +646,7 @@ func (r *Reader) readBlock(
 		} else {
 			decompressed = cacheValueOrBuf{v: cache.Alloc(decodedLen)}
 		}
-		if _, err := decompressInto(typ, compressed.get()[prefixLen:], decompressed.get()); err != nil {
+		if _, err := decompressInto(btyp, compressed.get()[prefixLen:], decompressed.get()); err != nil {
 			compressed.release()
 			return bufferHandle{}, err
 		}
@@ -702,8 +737,10 @@ func (r *Reader) readMetaindex(metaindexBH BlockHandle) error {
 	// allocator. We don't expect to use metaBufferPool again.
 	defer r.metaBufferPool.Release()
 
+	ctx := context.Background()
+	ctx = objiotracing.WithBlockType(ctx, objiotracing.MetadataBlock)
 	b, err := r.readBlock(
-		context.Background(), metaindexBH, nil /* transform */, nil /* readHandle */, nil /* stats */, &r.metaBufferPool)
+		ctx, metaindexBH, nil /* transform */, nil /* readHandle */, nil /* stats */, &r.metaBufferPool)
 	if err != nil {
 		return err
 	}
@@ -1182,6 +1219,10 @@ func NewReader(f objstorage.Readable, o ReaderOptions, extraOpts ...ReaderOption
 	}
 
 	return r, nil
+}
+
+func (r *Reader) SetCompaction() {
+	r.compaction = true
 }
 
 // ReadableFile describes the smallest subset of vfs.File that is required for

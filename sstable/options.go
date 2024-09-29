@@ -8,6 +8,7 @@ import (
 	"github.com/cockroachdb/fifo"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/cache"
+	"github.com/cockroachdb/pebble/readlist"
 )
 
 // Compression is the per-block compression algorithm to use.
@@ -116,6 +117,7 @@ type ReaderOptions struct {
 	// loaded (i.e. read from the filesystem) in parallel. Each load acquires one
 	// unit from the semaphore for the duration of the read.
 	LoadBlockSema *fifo.Semaphore
+	ReadList      *readlist.ReadList
 
 	// User properties specified in this map will not be added to sst.Properties.UserProperties.
 	DeniedUserProperties map[string]struct{}

@@ -509,6 +509,16 @@ func (d *DB) TestOnlyWaitForCleaning() {
 	d.cleanupManager.Wait()
 }
 
+type ReadStats struct {
+	BlockBytes         uint64
+	BlockBytesCache    uint64
+	BlockReadCount     uint64
+	BlockReadDuration  time.Duration
+	BlockReadDurations []time.Duration
+	DiskTypes          []uint8
+	CacheTypes         []uint8
+}
+
 // Get gets the value for the given key. It returns ErrNotFound if the DB does
 // not contain the key.
 //
@@ -517,6 +527,11 @@ func (d *DB) TestOnlyWaitForCleaning() {
 // slice will remain valid until the returned Closer is closed. On success, the
 // caller MUST call closer.Close() or a memory leak will occur.
 func (d *DB) Get(key []byte) ([]byte, io.Closer, error) {
+	v, closer, _, err := d.getInternal(key, nil /* batch */, nil /* snapshot */)
+	return v, closer, err
+}
+
+func (d *DB) GetWithStats(key []byte) ([]byte, io.Closer, ReadStats, error) {
 	return d.getInternal(key, nil /* batch */, nil /* snapshot */)
 }
 
@@ -532,7 +547,7 @@ var getIterAllocPool = sync.Pool{
 	},
 }
 
-func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, error) {
+func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, ReadStats, error) {
 	if err := d.closed.Load(); err != nil {
 		panic(err)
 	}
@@ -564,6 +579,9 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		mem:      readState.memtables,
 		l0:       readState.current.L0SublevelFiles,
 		version:  readState.current,
+		iOpts: internalIterOpts{
+			stats: &base.InternalIteratorStats{},
+		},
 	}
 
 	// Strip off memtables which cannot possibly contain the seqNum being read
@@ -592,11 +610,20 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 	if !i.First() {
 		err := i.Close()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, ReadStats{}, err
 		}
-		return nil, nil, ErrNotFound
+		return nil, nil, ReadStats{}, ErrNotFound
 	}
-	return i.Value(), i, nil
+	stat := ReadStats{
+		BlockBytes:         get.iOpts.stats.BlockBytes,
+		BlockBytesCache:    get.iOpts.stats.BlockBytesCache,
+		BlockReadCount:     get.iOpts.stats.BlockReadCount,
+		BlockReadDuration:  get.iOpts.stats.BlockReadDuration,
+		BlockReadDurations: get.iOpts.stats.BlockReadDurations,
+		DiskTypes:          get.iOpts.stats.DiskTypes,
+		CacheTypes:         get.iOpts.stats.CacheTypes,
+	}
+	return i.Value(), i, stat, nil
 }
 
 // Set sets the value for the given key. It overwrites any previous value

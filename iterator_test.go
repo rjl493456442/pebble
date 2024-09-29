@@ -1522,7 +1522,7 @@ func TestIteratorStatsMerge(t *testing.T) {
 		ReverseStepCount: [NumStatsKind]int{7, 8},
 		InternalStats: InternalIteratorStats{
 			BlockBytes:                     9,
-			BlockBytesInCache:              10,
+			BlockBytesCache:                10,
 			BlockReadDuration:              3 * time.Millisecond,
 			KeyBytes:                       11,
 			ValueBytes:                     12,
@@ -1545,7 +1545,7 @@ func TestIteratorStatsMerge(t *testing.T) {
 		ReverseStepCount: [NumStatsKind]int{7, 8},
 		InternalStats: InternalIteratorStats{
 			BlockBytes:                     9,
-			BlockBytesInCache:              10,
+			BlockBytesCache:                10,
 			BlockReadDuration:              4 * time.Millisecond,
 			KeyBytes:                       11,
 			ValueBytes:                     12,
@@ -1569,7 +1569,7 @@ func TestIteratorStatsMerge(t *testing.T) {
 		ReverseStepCount: [NumStatsKind]int{14, 16},
 		InternalStats: InternalIteratorStats{
 			BlockBytes:                     18,
-			BlockBytesInCache:              20,
+			BlockBytesCache:                20,
 			BlockReadDuration:              7 * time.Millisecond,
 			KeyBytes:                       22,
 			ValueBytes:                     24,

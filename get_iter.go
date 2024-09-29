@@ -30,10 +30,12 @@ type getIter struct {
 	level        int
 	batch        *Batch
 	mem          flushableList
+	inMemory     bool
 	l0           []manifest.LevelSlice
 	version      *version
 	iterKey      *InternalKey
 	iterValue    base.LazyValue
+	iOpts        internalIterOpts
 	err          error
 }
 
@@ -103,6 +105,15 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 				if g.comparer.Equal(g.key, key.UserKey) {
 					if !key.Visible(g.snapshot, base.InternalKeySeqNumMax) {
 						g.iterKey, g.iterValue = g.iter.Next()
+
+						if g.iOpts.stats != nil {
+							if g.inMemory {
+								g.iOpts.stats.Level = -1
+							} else {
+								g.iOpts.stats.Level = g.level
+							}
+							g.iOpts.stats.Find = true
+						}
 						continue
 					}
 					return g.iterKey, g.iterValue
@@ -149,8 +160,10 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			g.rangeDelIter = m.newRangeDelIter(nil)
 			g.mem = g.mem[:n-1]
 			g.iterKey, g.iterValue = g.iter.SeekGE(g.key, base.SeekGEFlagsNone)
+			g.inMemory = true
 			continue
 		}
+		g.inMemory = false
 
 		if g.level == 0 {
 			// Create iterators from L0 from newest to oldest.
@@ -159,7 +172,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 				g.l0 = g.l0[:n-1]
 				iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 				g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
-					files, manifest.L0Sublevel(n), internalIterOpts{})
+					files, manifest.L0Sublevel(n), g.iOpts)
 				g.levelIter.initRangeDel(&g.rangeDelIter)
 				bc := levelIterBoundaryContext{}
 				g.levelIter.initBoundaryContext(&bc)
@@ -182,6 +195,9 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		}
 
 		if g.level >= numLevels {
+			if g.iOpts.stats != nil {
+				g.iOpts.stats.Find = false
+			}
 			return nil, base.LazyValue{}
 		}
 		if g.version.Levels[g.level].Empty() {
@@ -191,7 +207,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 
 		iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 		g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
-			g.version.Levels[g.level].Iter(), manifest.Level(g.level), internalIterOpts{})
+			g.version.Levels[g.level].Iter(), manifest.Level(g.level), g.iOpts)
 		g.levelIter.initRangeDel(&g.rangeDelIter)
 		bc := levelIterBoundaryContext{}
 		g.levelIter.initBoundaryContext(&bc)

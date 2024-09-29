@@ -470,6 +470,9 @@ func (c *tableCacheShard) newIters(
 		c.unrefValue(v)
 		return nil, nil, err
 	}
+	if internalOpts.bytesIterated != nil {
+		v.reader.SetCompaction()
+	}
 
 	provider := dbOpts.objProvider
 	// Check if this file is a foreign file.
@@ -527,7 +530,7 @@ func (c *tableCacheShard) newIters(
 		hideObsoletePoints = true
 	}
 	if internalOpts.bytesIterated != nil {
-		iter, err = cr.NewCompactionIter(internalOpts.bytesIterated, rp, internalOpts.bufferPool)
+		iter, err = cr.NewCompactionIter(internalOpts.bytesIterated, rp, internalOpts.bufferPool, internalOpts.stats)
 	} else {
 		iter, err = cr.NewIterWithBlockPropertyFiltersAndContextEtc(
 			ctx, opts.GetLowerBound(), opts.GetUpperBound(), filterer, hideObsoletePoints, useFilter,

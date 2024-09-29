@@ -52,8 +52,14 @@ func WithReason(ctx context.Context, reason Reason) context.Context { return ctx
 
 // WithBlockType creates a context that has an associated BlockType (which ends up in
 // traces created under that context).
-func WithBlockType(ctx context.Context, blockType BlockType) context.Context { return ctx }
+func WithBlockType(ctx context.Context, blockType BlockType) context.Context {
+	return ctx
+}
 
 // WithLevel creates a context that has an associated level (which ends up in
 // traces created under that context).
 func WithLevel(ctx context.Context, level int) context.Context { return ctx }
+
+func GetBlockType(ctx context.Context) BlockType {
+	return UnknownBlock
+}

@@ -7,6 +7,7 @@ package pebble
 import (
 	"bytes"
 	"fmt"
+	"github.com/cockroachdb/pebble/readlist"
 	"io"
 	"runtime"
 	"strconv"
@@ -487,6 +488,8 @@ type Options struct {
 	// loaded (i.e. read from the filesystem) in parallel. Each load acquires one
 	// unit from the semaphore for the duration of the read.
 	LoadBlockSema *fifo.Semaphore
+
+	ReadList *readlist.ReadList
 
 	// Cleaner cleans obsolete files.
 	//
@@ -1158,6 +1161,7 @@ func (o *Options) EnsureDefaults() *Options {
 	if o.Experimental.MultiLevelCompactionHeuristic == nil {
 		o.Experimental.MultiLevelCompactionHeuristic = WriteAmpHeuristic{}
 	}
+	o.ReadList = readlist.NewReadList()
 
 	o.initMaps()
 	return o
@@ -1733,6 +1737,7 @@ func (o *Options) MakeReaderOptions() sstable.ReaderOptions {
 	if o != nil {
 		readerOpts.Cache = o.Cache
 		readerOpts.LoadBlockSema = o.LoadBlockSema
+		readerOpts.ReadList = o.ReadList
 		readerOpts.Comparer = o.Comparer
 		readerOpts.Filters = o.Filters
 		if o.Merger != nil {
