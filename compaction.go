@@ -615,8 +615,10 @@ type compaction struct {
 
 	// flushing contains the flushables (aka memtables) that are being flushed.
 	flushing flushableList
+
 	// bytesIterated contains the number of bytes that have been flushed/compacted.
 	bytesIterated uint64
+
 	// bytesWritten contains the number of bytes that have been written to outputs.
 	bytesWritten int64
 
@@ -1386,6 +1388,7 @@ func (c *compaction) newInputIter(
 				level.files.Iter(), l, internalIterOpts{
 					bytesIterated: &c.bytesIterated,
 					bufferPool:    &c.bufferPool,
+					stats:         &c.stats,
 				}))
 			// TODO(jackson): Use keyspan.LevelIter to avoid loading all the range
 			// deletions into memory upfront. (See #2015, which reverted this.)
@@ -1883,6 +1886,7 @@ func (d *DB) flush() {
 		flushingWorkStart := time.Now()
 		d.mu.Lock()
 		defer d.mu.Unlock()
+
 		idleDuration := flushingWorkStart.Sub(d.mu.compact.noOngoingFlushStartTime)
 		var bytesFlushed uint64
 		var err error
@@ -1893,15 +1897,19 @@ func (d *DB) flush() {
 		d.mu.compact.flushing = false
 		d.mu.compact.noOngoingFlushStartTime = time.Now()
 		workDuration := d.mu.compact.noOngoingFlushStartTime.Sub(flushingWorkStart)
+
 		d.mu.compact.flushWriteThroughput.Bytes += int64(bytesFlushed)
 		d.mu.compact.flushWriteThroughput.WorkDuration += workDuration
 		d.mu.compact.flushWriteThroughput.IdleDuration += idleDuration
+
 		// More flush work may have arrived while we were flushing, so schedule
 		// another flush if needed.
 		d.maybeScheduleFlush()
+
 		// The flush may have produced too many files in a level, so schedule a
 		// compaction if needed.
 		d.maybeScheduleCompaction()
+
 		d.mu.compact.cond.Broadcast()
 	})
 }
@@ -2088,6 +2096,7 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 	var ve *manifest.VersionEdit
 	var pendingOutputs []physicalMeta
 	var stats compactStats
+
 	// To determine the target level of the files in the ingestedFlushable, we
 	// need to acquire the logLock, and not release it for that duration. Since,
 	// we need to acquire the logLock below to perform the logAndApply step
@@ -2775,6 +2784,17 @@ func (d *DB) compact1(c *compaction, errChannel chan error) (err error) {
 	d.mu.versions.incrementCompactionBytes(-c.bytesWritten)
 
 	info.TotalDuration = d.timeNow().Sub(c.beganAt)
+	info.BytesRead = c.stats.BlockBytes
+	info.BytesCache = c.stats.BlockBytesCache
+	info.BlockLoad = c.stats.BlockReadCount
+	info.BlockLoadCache = c.stats.BlockReadCountCache
+	info.BlockLoadDuration = c.stats.BlockReadDuration
+	info.BlockCacheLoadDuration = c.stats.BlockCacheReadDuration
+
+	info.BlockLoadDurations = c.stats.BlockReadDurations
+	info.BlockCheckSumDurations = c.stats.BlockCheckSumDurations
+	info.BlockDecompressDurations = c.stats.BlockDecompressDurations
+
 	d.opts.EventListener.CompactionEnd(info)
 
 	// Update the read state before deleting obsolete files because the
@@ -3016,6 +3036,7 @@ func (d *DB) runCompaction(
 	}
 	c.allowedZeroSeqNum = c.allowZeroSeqNum()
 	iiter = invalidating.MaybeWrapIfInvariants(iiter)
+
 	iter := newCompactionIter(c.cmp, c.equal, c.formatKey, d.merge, iiter, snapshots,
 		&c.rangeDelFrag, &c.rangeKeyFrag, c.allowedZeroSeqNum, c.elideTombstone,
 		c.elideRangeTombstone, d.opts.Experimental.IneffectualSingleDeleteCallback,

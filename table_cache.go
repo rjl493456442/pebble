@@ -470,6 +470,9 @@ func (c *tableCacheShard) newIters(
 		c.unrefValue(v)
 		return nil, nil, err
 	}
+	if internalOpts.bytesIterated != nil {
+		v.reader.SetCompaction()
+	}
 
 	provider := dbOpts.objProvider
 	// Check if this file is a foreign file.
@@ -510,6 +513,10 @@ func (c *tableCacheShard) newIters(
 	if opts != nil {
 		useFilter = manifest.LevelToInt(opts.level) != 6 || opts.UseL6Filters
 		ctx = objiotracing.WithLevel(ctx, manifest.LevelToInt(opts.level))
+
+		if manifest.LevelToInt(opts.level) == 6 {
+			fmt.Println("useFilter for level6", useFilter)
+		}
 	}
 	tableFormat, err := v.reader.TableFormat()
 	if err != nil {
@@ -527,7 +534,7 @@ func (c *tableCacheShard) newIters(
 		hideObsoletePoints = true
 	}
 	if internalOpts.bytesIterated != nil {
-		iter, err = cr.NewCompactionIter(internalOpts.bytesIterated, rp, internalOpts.bufferPool)
+		iter, err = cr.NewCompactionIter(internalOpts.bytesIterated, rp, internalOpts.bufferPool, internalOpts.stats)
 	} else {
 		iter, err = cr.NewIterWithBlockPropertyFiltersAndContextEtc(
 			ctx, opts.GetLowerBound(), opts.GetUpperBound(), filterer, hideObsoletePoints, useFilter,

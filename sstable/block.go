@@ -46,15 +46,18 @@ type blockWriter struct {
 	// ensuring that any of the keys with the same prefix can be used to
 	// assemble the full key when the prefix does change.
 	restarts []uint32
+
 	// Do not read curKey directly from outside blockWriter since it can have
 	// the InternalKeyKindSSTableInternalObsoleteBit set. Use getCurKey() or
 	// getCurUserKey() instead.
 	curKey []byte
+
 	// curValue excludes the optional prefix provided to
 	// storeWithOptionalValuePrefix.
 	curValue []byte
 	prevKey  []byte
 	tmp      [4]byte
+
 	// We don't know the state of the sets that were at the end of the previous
 	// block, so this is initially 0. It may be true for the second and later
 	// restarts in a block. Not having inter-block information is fine since we
@@ -341,12 +344,15 @@ type blockEntry struct {
 // We have picked the first option here.
 type blockIter struct {
 	cmp Compare
+
 	// offset is the byte index that marks where the current key/value is
 	// encoded in the block.
 	offset int32
+
 	// nextOffset is the byte index where the next key/value is encoded in the
 	// block.
 	nextOffset int32
+
 	// A "restart point" in a block is a point where the full key is encoded,
 	// instead of just having a suffix of the key encoded. See readEntry() for
 	// how prefix compression of keys works. Keys in between two restart points
@@ -359,10 +365,12 @@ type blockIter struct {
 	// 4 bytes of the block as a uint32 (i.ptr[len(block)-4:]). i.restarts can
 	// therefore be seen as the point where data in the block ends, and a list
 	// of offsets of all restart points begins.
-	restarts int32
+	restarts int32 // restart offset
+
 	// Number of restart points in this block. Encoded at the end of the block
 	// as a uint32.
-	numRestarts  int32
+	numRestarts int32
+
 	globalSeqNum uint64
 	ptr          unsafe.Pointer
 	data         []byte
@@ -371,20 +379,25 @@ type blockIter struct {
 	// compression), to fullKey (for a prefix compressed key), or to a slice of
 	// data stored in cachedBuf (during reverse iteration).
 	key []byte
+
 	// fullKey is a buffer used for key prefix decompression.
 	fullKey []byte
+
 	// val contains the value the iterator is currently pointed at. If non-nil,
 	// this points to a slice of the block data.
 	val []byte
+
 	// lazyValue is val turned into a LazyValue, whenever a positioning method
 	// returns a non-nil key-value pair.
 	lazyValue base.LazyValue
+
 	// ikey contains the decoded InternalKey the iterator is currently pointed
 	// at. Note that the memory backing ikey.UserKey is either data stored
 	// directly in the block, fullKey, or cachedBuf. The key stability guarantee
 	// for blocks built with a restart interval of 1 is achieved by having
 	// ikey.UserKey always point to data stored directly in the block.
 	ikey InternalKey
+
 	// cached and cachedBuf are used during reverse iteration. They are needed
 	// because we can't perform prefix decoding in reverse, only in the forward
 	// direction. In order to iterate in reverse, we decode and cache the entries
@@ -438,6 +451,7 @@ func (i *blockIter) init(
 	i.data = block
 	i.fullKey = i.fullKey[:0]
 	i.val = nil
+
 	i.hideObsoletePoints = hideObsoletePoints
 	i.clearCache()
 	if i.restarts > 0 {

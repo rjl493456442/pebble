@@ -351,14 +351,41 @@ type InternalIteratorStats struct {
 	// Bytes in the loaded blocks. If the block was compressed, this is the
 	// compressed bytes. Currently, only the index blocks, data blocks
 	// containing points, and filter blocks are included.
-	BlockBytes uint64
-	// Subset of BlockBytes that were in the block cache.
-	BlockBytesInCache uint64
+	BlockBytes     uint64
+	BlockByteSlice []uint64
+
+	// Bytes in the loaded blocks, resolved from the cache. If the block was
+	// compressed, this is the compressed bytes. Currently, only the index blocks,
+	// data blocks containing points, and filter blocks are included.
+	BlockBytesCache uint64
+
+	// BlockReadCount is the number of blocks resolved from the storage.
+	BlockReadCount uint64
+
+	// BlockReadCountCache is the number of blocks resolved from the cache.
+	BlockReadCountCache uint64
+
 	// BlockReadDuration accumulates the duration spent fetching blocks
 	// due to block cache misses.
 	// TODO(sumeer): this currently excludes the time spent in Reader creation,
 	// and in reading the rangedel and rangekey blocks. Fix that.
-	BlockReadDuration time.Duration
+	BlockReadDuration      time.Duration
+	BlockCacheReadDuration time.Duration
+
+	// BlockReadDurations is a list of duration corresponds to the time
+	// spent on resolving blocks from the storage.
+	BlockReadDurations       []time.Duration
+	BlockCheckSumDurations   []time.Duration
+	BlockDecompressDurations []time.Duration
+
+	// Injected fields for debugging
+
+	// Get specific
+	Level int  // -1 memory, 0 level0, etc
+	Found bool // flag if the entry is found or not
+
+	// Common for Get and Compaction
+
 	// The following can repeatedly count the same points if they are iterated
 	// over multiple times. Additionally, they may count a point twice when
 	// switching directions. The latter could be improved if needed.
@@ -366,11 +393,14 @@ type InternalIteratorStats struct {
 	// Bytes in keys that were iterated over. Currently, only point keys are
 	// included.
 	KeyBytes uint64
+
 	// Bytes in values that were iterated over. Currently, only point values are
 	// included. For separated values, this is the size of the handle.
 	ValueBytes uint64
+
 	// The count of points iterated over.
 	PointCount uint64
+
 	// Points that were iterated over that were covered by range tombstones. It
 	// can be useful for discovering instances of
 	// https://github.com/cockroachdb/pebble/issues/1070.
@@ -400,8 +430,17 @@ type InternalIteratorStats struct {
 // Merge merges the stats in from into the given stats.
 func (s *InternalIteratorStats) Merge(from InternalIteratorStats) {
 	s.BlockBytes += from.BlockBytes
-	s.BlockBytesInCache += from.BlockBytesInCache
+	s.BlockReadCount += from.BlockReadCount
+	s.BlockReadCountCache += from.BlockReadCountCache
 	s.BlockReadDuration += from.BlockReadDuration
+	s.BlockCacheReadDuration += from.BlockCacheReadDuration
+	s.BlockByteSlice = append(s.BlockByteSlice, from.BlockByteSlice...)
+
+	s.BlockBytesCache += from.BlockBytesCache
+	s.BlockReadDurations = append(s.BlockReadDurations, from.BlockReadDurations...)
+	s.BlockCheckSumDurations = append(s.BlockCheckSumDurations, from.BlockCheckSumDurations...)
+	s.BlockDecompressDurations = append(s.BlockDecompressDurations, from.BlockDecompressDurations...)
+
 	s.KeyBytes += from.KeyBytes
 	s.ValueBytes += from.ValueBytes
 	s.PointCount += from.PointCount
@@ -418,11 +457,11 @@ func (s *InternalIteratorStats) String() string {
 // SafeFormat implements the redact.SafeFormatter interface.
 func (s *InternalIteratorStats) SafeFormat(p redact.SafePrinter, verb rune) {
 	p.Printf("blocks: %s cached",
-		humanize.Bytes.Uint64(s.BlockBytesInCache),
+		humanize.Bytes.Uint64(s.BlockBytesCache),
 	)
-	if s.BlockBytes != s.BlockBytesInCache || s.BlockReadDuration != 0 {
+	if s.BlockBytes != s.BlockBytesCache || s.BlockReadDuration != 0 {
 		p.Printf(", %s not cached (read time: %s)",
-			humanize.Bytes.Uint64(s.BlockBytes-s.BlockBytesInCache),
+			humanize.Bytes.Uint64(s.BlockBytes-s.BlockBytesCache),
 			humanize.FormattedString(s.BlockReadDuration.String()),
 		)
 	}

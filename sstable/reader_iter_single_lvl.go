@@ -20,8 +20,9 @@ import (
 // key, it first looks in the index for the block that contains that key, and then
 // looks inside that block.
 type singleLevelIterator struct {
-	ctx context.Context
-	cmp Compare
+	level int
+	ctx   context.Context
+	cmp   Compare
 	// Global lower/upper bound for the iterator.
 	lower []byte
 	upper []byte
@@ -199,6 +200,7 @@ func (i *singleLevelIterator) init(
 	i.stats = stats
 	i.hideObsoletePoints = hideObsoletePoints
 	i.bufferPool = bufferPool
+
 	err = i.index.initHandle(i.cmp, indexH, r.Properties.GlobalSeqNum, false)
 	if err != nil {
 		// blockIter.Close releases indexH and always returns a nil error
@@ -206,6 +208,7 @@ func (i *singleLevelIterator) init(
 		return err
 	}
 	i.dataRH = objstorageprovider.UsePreallocatedReadHandle(ctx, r.readable, &i.dataRHPrealloc)
+
 	if r.tableFormat >= TableFormatPebblev3 {
 		if r.Properties.NumValueBlocks > 0 {
 			// NB: we cannot avoid this ~248 byte allocation, since valueBlockReader
@@ -395,10 +398,15 @@ func (i *singleLevelIterator) loadBlock(dir int8) loadBlockResult {
 		// blockIntersects
 	}
 	ctx := objiotracing.WithBlockType(i.ctx, objiotracing.DataBlock)
-	block, err := i.reader.readBlock(ctx, i.dataBH, nil /* transform */, i.dataRH, i.stats, i.bufferPool)
+	block, hit, err := i.reader.readBlock(ctx, i.dataBH, nil /* transform */, i.dataRH, i.stats, i.bufferPool)
 	if err != nil {
 		i.err = err
 		return loadBlockFailed
+	}
+	if hit {
+		BCacheStats.DataHits.Add(1)
+	} else {
+		BCacheStats.DataMisses.Add(1)
 	}
 	i.err = i.data.initHandle(i.cmp, block, i.reader.Properties.GlobalSeqNum, i.hideObsoletePoints)
 	if i.err != nil {
@@ -416,7 +424,15 @@ func (i *singleLevelIterator) readBlockForVBR(
 	ctx context.Context, h BlockHandle, stats *base.InternalIteratorStats,
 ) (bufferHandle, error) {
 	ctx = objiotracing.WithBlockType(ctx, objiotracing.ValueBlock)
-	return i.reader.readBlock(ctx, h, nil, i.vbRH, stats, i.bufferPool)
+	handler, hit, err := i.reader.readBlock(ctx, h, nil, i.vbRH, stats, i.bufferPool)
+	if err == nil {
+		if hit {
+			BCacheStats.ValueHits.Add(1)
+		} else {
+			BCacheStats.ValueMisses.Add(1)
+		}
+	}
+	return handler, err
 }
 
 // resolveMaybeExcluded is invoked when the block-property filterer has found

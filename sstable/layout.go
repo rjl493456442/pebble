@@ -143,7 +143,7 @@ func (l *Layout) Describe(
 			continue
 		}
 
-		h, err := r.readBlock(
+		h, _, err := r.readBlock(
 			context.Background(), b.BlockHandle, nil /* transform */, nil /* readHandle */, nil /* stats */, nil /* buffer pool */)
 		if err != nil {
 			fmt.Fprintf(w, "  [err: %s]\n", err)

@@ -141,6 +141,7 @@ func (rh *vfsReadHandle) ReadAt(_ context.Context, p []byte, offset int64) error
 		}
 		return err
 	}
+
 	if rh.readaheadMode != NoReadahead {
 		if readaheadSize := rh.rs.maybeReadahead(offset, int64(len(p))); readaheadSize > 0 {
 			if rh.readaheadMode == FadviseSequential && readaheadSize >= fileMaxReadaheadSize {

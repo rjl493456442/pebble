@@ -509,6 +509,34 @@ func (d *DB) TestOnlyWaitForCleaning() {
 	d.cleanupManager.Wait()
 }
 
+type ReadStats struct {
+	BlockBytes          uint64
+	BlockBytesCache     uint64
+	BlockReadCount      uint64
+	BlockReadCountCache uint64
+	BlockByteSlice      []uint64
+
+	BlockReadDuration      time.Duration
+	BlockCacheReadDuration time.Duration
+	PrepareDuration        time.Duration
+	MemoryLookupDuration   time.Duration
+
+	LevelZeroLookupDuration   time.Duration
+	LevelZeroFindFileDuration time.Duration
+	LevelZeroScanFileDuration time.Duration
+
+	LevelNonZeroLookupDuration   time.Duration
+	LevelNonZeroInitDuration     time.Duration
+	LevelNonZeroFindFileDuration time.Duration
+	LevelNonZeroScanFileDuration time.Duration
+
+	TotalTables int
+
+	BlockReadDurations       []time.Duration
+	BlockCheckSumDurations   []time.Duration
+	BlockDecompressDurations []time.Duration
+}
+
 // Get gets the value for the given key. It returns ErrNotFound if the DB does
 // not contain the key.
 //
@@ -517,6 +545,11 @@ func (d *DB) TestOnlyWaitForCleaning() {
 // slice will remain valid until the returned Closer is closed. On success, the
 // caller MUST call closer.Close() or a memory leak will occur.
 func (d *DB) Get(key []byte) ([]byte, io.Closer, error) {
+	v, closer, _, err := d.getInternal(key, nil /* batch */, nil /* snapshot */)
+	return v, closer, err
+}
+
+func (d *DB) GetWithStats(key []byte) ([]byte, io.Closer, ReadStats, error) {
 	return d.getInternal(key, nil /* batch */, nil /* snapshot */)
 }
 
@@ -532,7 +565,7 @@ var getIterAllocPool = sync.Pool{
 	},
 }
 
-func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, error) {
+func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, ReadStats, error) {
 	if err := d.closed.Load(); err != nil {
 		panic(err)
 	}
@@ -540,6 +573,7 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 	// Grab and reference the current readState. This prevents the underlying
 	// files in the associated version from being deleted if there is a current
 	// compaction. The readState is unref'd by Iterator.Close().
+	ss := time.Now()
 	readState := d.loadReadState()
 
 	// Determine the seqnum to read at after grabbing the read state (current and
@@ -564,6 +598,9 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		mem:      readState.memtables,
 		l0:       readState.current.L0SublevelFiles,
 		version:  readState.current,
+		iOpts: internalIterOpts{
+			stats: &base.InternalIteratorStats{},
+		},
 	}
 
 	// Strip off memtables which cannot possibly contain the seqNum being read
@@ -588,15 +625,43 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		readState:    readState,
 		keyBuf:       buf.keyBuf,
 	}
+	pp := time.Since(ss)
 
 	if !i.First() {
 		err := i.Close()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, ReadStats{}, err
 		}
-		return nil, nil, ErrNotFound
+		return nil, nil, ReadStats{}, ErrNotFound
 	}
-	return i.Value(), i, nil
+	stat := ReadStats{
+		BlockBytes:          get.iOpts.stats.BlockBytes,
+		BlockBytesCache:     get.iOpts.stats.BlockBytesCache,
+		BlockReadCount:      get.iOpts.stats.BlockReadCount,
+		BlockReadCountCache: get.iOpts.stats.BlockReadCountCache,
+		BlockByteSlice:      get.iOpts.stats.BlockByteSlice,
+
+		BlockReadDuration:      get.iOpts.stats.BlockReadDuration,
+		BlockCacheReadDuration: get.iOpts.stats.BlockCacheReadDuration,
+		PrepareDuration:        pp,
+		MemoryLookupDuration:   get.memoryDuration,
+
+		LevelZeroLookupDuration:   get.levelZeroDuration,
+		LevelZeroFindFileDuration: get.levelZeroFindFile,
+		LevelZeroScanFileDuration: get.levelZeroScanFile,
+
+		LevelNonZeroLookupDuration:   get.levelNonZeroDuration,
+		LevelNonZeroInitDuration:     get.levelNonZeroInit,
+		LevelNonZeroFindFileDuration: get.levelNonZeroFindFile,
+		LevelNonZeroScanFileDuration: get.levelNonZeroScanFile,
+
+		TotalTables: get.totalTables,
+
+		BlockReadDurations:       get.iOpts.stats.BlockReadDurations,
+		BlockCheckSumDurations:   get.iOpts.stats.BlockCheckSumDurations,
+		BlockDecompressDurations: get.iOpts.stats.BlockDecompressDurations,
+	}
+	return i.Value(), i, stat, nil
 }
 
 // Set sets the value for the given key. It overwrites any previous value
@@ -2434,6 +2499,11 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 				size += d.mu.mem.queue[i].totalBytes()
 			}
 			if size >= uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize {
+				if b.flushable != nil {
+					fmt.Println("Too much data cached in the memory", "size", size,
+						"stop", d.opts.MemTableStopWritesThreshold, "memtablesize", d.opts.MemTableSize,
+						"limit", uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize)
+				}
 				// We have filled up the current memtable, but already queued memtables
 				// are still flushing, so we wait.
 				if !stalled {
@@ -2453,6 +2523,9 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		l0ReadAmp := d.mu.versions.currentVersion().L0Sublevels.ReadAmplification()
 		if l0ReadAmp >= d.opts.L0StopWritesThreshold {
 			// There are too many level-0 files, so we wait.
+			if b.flushable != nil {
+				fmt.Println("Too much data cached in the memory", "l0ReadAmp", l0ReadAmp, "limit", d.opts.L0StopWritesThreshold)
+			}
 			if !stalled {
 				stalled = true
 				d.opts.EventListener.WriteStallBegin(WriteStallBeginInfo{

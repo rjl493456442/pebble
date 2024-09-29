@@ -7,6 +7,7 @@ package pebble
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/keyspan"
@@ -34,7 +35,20 @@ type getIter struct {
 	version      *version
 	iterKey      *InternalKey
 	iterValue    base.LazyValue
+	iOpts        internalIterOpts
 	err          error
+
+	inMemory          bool
+	memoryDuration    time.Duration
+	levelZeroDuration time.Duration
+	levelZeroFindFile time.Duration
+	levelZeroScanFile time.Duration
+
+	levelNonZeroDuration time.Duration
+	levelNonZeroInit     time.Duration
+	levelNonZeroFindFile time.Duration
+	levelNonZeroScanFile time.Duration
+	totalTables          int
 }
 
 // TODO(sumeer): CockroachDB code doesn't use getIter, but, for completeness,
@@ -105,6 +119,14 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 						g.iterKey, g.iterValue = g.iter.Next()
 						continue
 					}
+					if g.iOpts.stats != nil {
+						if g.inMemory {
+							g.iOpts.stats.Level = -1
+						} else {
+							g.iOpts.stats.Level = g.level
+						}
+						g.iOpts.stats.Found = true
+					}
 					return g.iterKey, g.iterValue
 				}
 			}
@@ -144,22 +166,27 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 
 		// Create iterators from memtables from newest to oldest.
 		if n := len(g.mem); n > 0 {
+			ss := time.Now()
 			m := g.mem[n-1]
 			g.iter = m.newIter(nil)
 			g.rangeDelIter = m.newRangeDelIter(nil)
 			g.mem = g.mem[:n-1]
 			g.iterKey, g.iterValue = g.iter.SeekGE(g.key, base.SeekGEFlagsNone)
+			g.inMemory = true
+			g.memoryDuration += time.Since(ss)
 			continue
 		}
+		g.inMemory = false
 
 		if g.level == 0 {
 			// Create iterators from L0 from newest to oldest.
 			if n := len(g.l0); n > 0 {
+				ss := time.Now()
 				files := g.l0[n-1].Iter()
 				g.l0 = g.l0[:n-1]
 				iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 				g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
-					files, manifest.L0Sublevel(n), internalIterOpts{})
+					files, manifest.L0Sublevel(n), g.iOpts)
 				g.levelIter.initRangeDel(&g.rangeDelIter)
 				bc := levelIterBoundaryContext{}
 				g.levelIter.initBoundaryContext(&bc)
@@ -176,12 +203,19 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 					g.iterKey = nil
 					g.iterValue = base.LazyValue{}
 				}
+				g.levelZeroDuration += time.Since(ss)
+				g.levelZeroFindFile += g.levelIter.findFileDuration
+				g.levelZeroScanFile += g.levelIter.scanFileDuration
+				g.totalTables++
 				continue
 			}
 			g.level++
 		}
 
 		if g.level >= numLevels {
+			if g.iOpts.stats != nil {
+				g.iOpts.stats.Found = false
+			}
 			return nil, base.LazyValue{}
 		}
 		if g.version.Levels[g.level].Empty() {
@@ -189,14 +223,19 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			continue
 		}
 
-		iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
+		ss := time.Now()
+		iterOpts := IterOptions{
+			logger:                        g.logger,
+			snapshotForHideObsoletePoints: g.snapshot,
+		}
 		g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
-			g.version.Levels[g.level].Iter(), manifest.Level(g.level), internalIterOpts{})
+			g.version.Levels[g.level].Iter(), manifest.Level(g.level), g.iOpts)
 		g.levelIter.initRangeDel(&g.rangeDelIter)
 		bc := levelIterBoundaryContext{}
 		g.levelIter.initBoundaryContext(&bc)
 		g.level++
 		g.iter = &g.levelIter
+		g.levelNonZeroInit += time.Since(ss)
 
 		// Compute the key prefix for bloom filtering if split function is
 		// specified, or use the user key as default.
@@ -204,11 +243,16 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		if g.comparer.Split != nil {
 			prefix = g.key[:g.comparer.Split(g.key)]
 		}
+		ss = time.Now()
 		g.iterKey, g.iterValue = g.iter.SeekPrefixGE(prefix, g.key, base.SeekGEFlagsNone)
 		if bc.isSyntheticIterBoundsKey || bc.isIgnorableBoundaryKey {
 			g.iterKey = nil
 			g.iterValue = base.LazyValue{}
 		}
+		g.levelNonZeroDuration += time.Since(ss)
+		g.levelNonZeroFindFile += g.levelIter.findFileDuration
+		g.levelNonZeroScanFile += g.levelIter.scanFileDuration
+		g.totalTables++
 	}
 }
 

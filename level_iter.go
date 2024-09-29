@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"time"
 
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/invariants"
@@ -210,6 +211,9 @@ type levelIter struct {
 	// which construct "impossible" situations (e.g. seeking to a key before the
 	// lower bound).
 	disableInvariants bool
+
+	findFileDuration time.Duration
+	scanFileDuration time.Duration
 }
 
 // filteredIter is an additional interface implemented by iterators that may
@@ -758,6 +762,7 @@ func (l *levelIter) SeekPrefixGE(
 
 	// NB: the top-level Iterator has already adjusted key based on
 	// IterOptions.LowerBound.
+	ss := time.Now()
 	loadFileIndicator := l.loadFile(l.findFileGE(key, flags), +1)
 	if loadFileIndicator == noFileLoaded {
 		return nil, base.LazyValue{}
@@ -767,14 +772,22 @@ func (l *levelIter) SeekPrefixGE(
 		// positioned appropriately.
 		flags = flags.DisableTrySeekUsingNext()
 	}
+	l.findFileDuration += time.Since(ss)
+
+	ss = time.Now()
 	if key, val := l.iter.SeekPrefixGE(prefix, key, flags); key != nil {
+		l.scanFileDuration += time.Since(ss)
 		return l.verify(key, val)
 	}
+	l.scanFileDuration += time.Since(ss)
+
 	// When SeekPrefixGE returns nil, we have not necessarily reached the end of
 	// the sstable. All we know is that a key with prefix does not exist in the
-	// current sstable. We do know that the key lies within the bounds of the
-	// table as findFileGE found the table where key <= meta.Largest. We return
-	// the table's bound with isIgnorableBoundaryKey set.
+	// current sstable.
+	//
+	// We do know that the key lies within the bounds of the table as findFileGE
+	// found the table where key <= meta.Largest. We return the table's bound with
+	// isIgnorableBoundaryKey set.
 	if l.rangeDelIterPtr != nil && *l.rangeDelIterPtr != nil {
 		if l.tableOpts.UpperBound != nil {
 			l.syntheticBoundary.UserKey = l.tableOpts.UpperBound

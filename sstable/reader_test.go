@@ -733,8 +733,7 @@ func indexLayoutString(t *testing.T, r *Reader) string {
 		require.NoError(t, err)
 		fmt.Fprintf(&buf, " %s: size %d\n", string(key.UserKey), bh.Length)
 		if twoLevelIndex {
-			b, err := r.readBlock(
-				context.Background(), bh.BlockHandle, nil, nil, nil, nil)
+			b, _, err := r.readBlock(context.Background(), bh.BlockHandle, nil, nil, nil, nil)
 			require.NoError(t, err)
 			defer b.Release()
 			iter2, err := newBlockIter(r.Compare, b.Get())
@@ -966,7 +965,7 @@ func testBytesIteratedWithCompression(
 				var bytesIterated, prevIterated uint64
 				var pool BufferPool
 				pool.Init(5)
-				citer, err := r.NewCompactionIter(&bytesIterated, TrivialReaderProvider{Reader: r}, &pool)
+				citer, err := r.NewCompactionIter(&bytesIterated, TrivialReaderProvider{Reader: r}, &pool, nil)
 				require.NoError(t, err)
 
 				for key, _ := citer.First(); key != nil; key, _ = citer.Next() {
@@ -1023,7 +1022,7 @@ func TestCompactionIteratorSetupForCompaction(t *testing.T) {
 				var bytesIterated uint64
 				var pool BufferPool
 				pool.Init(5)
-				citer, err := r.NewCompactionIter(&bytesIterated, TrivialReaderProvider{Reader: r}, &pool)
+				citer, err := r.NewCompactionIter(&bytesIterated, TrivialReaderProvider{Reader: r}, &pool, nil)
 				require.NoError(t, err)
 				switch i := citer.(type) {
 				case *compactionIterator:
@@ -1078,7 +1077,7 @@ func TestReadaheadSetupForV3TablesWithMultipleVersions(t *testing.T) {
 	{
 		var pool BufferPool
 		pool.Init(5)
-		citer, err := r.NewCompactionIter(nil, TrivialReaderProvider{Reader: r}, &pool)
+		citer, err := r.NewCompactionIter(nil, TrivialReaderProvider{Reader: r}, &pool, nil)
 		require.NoError(t, err)
 		defer citer.Close()
 		i := citer.(*compactionIterator)

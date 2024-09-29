@@ -11,14 +11,20 @@ type writeTask struct {
 	// It is necessary that any writes to the channel have already been read,
 	// before adding the writeTask back to the pool.
 	compressionDone chan bool
-	buf             *dataBlockBuf
+
+	buf *dataBlockBuf
+
 	// If this is not nil, then this index block will be flushed.
 	flushableIndexBlock *indexBlockBuf
+
 	// currIndexBlock is the index block on which indexBlock.add must be called.
 	currIndexBlock *indexBlockBuf
-	indexEntrySep  InternalKey
+
+	indexEntrySep InternalKey
+
 	// inflightIndexEntrySize is used to decrement Writer.indexBlock.sizeEstimate.inflightSize.
 	indexInflightSize int
+
 	// If the index block is finished, then we set the finishedIndexProps here.
 	finishedIndexProps []byte
 }

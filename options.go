@@ -1158,7 +1158,6 @@ func (o *Options) EnsureDefaults() *Options {
 	if o.Experimental.MultiLevelCompactionHeuristic == nil {
 		o.Experimental.MultiLevelCompactionHeuristic = WriteAmpHeuristic{}
 	}
-
 	o.initMaps()
 	return o
 }

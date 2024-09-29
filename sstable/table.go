@@ -215,7 +215,7 @@ const (
 	metaRangeDelName   = "rocksdb.range_del"
 	metaRangeDelV2Name = "rocksdb.range_del2"
 
-	// Index Types.
+	// Index DiskTypes.
 	// A space efficient index block that is optimized for binary-search-based
 	// index.
 	binarySearchIndex = 0

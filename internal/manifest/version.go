@@ -236,7 +236,8 @@ type FileMetadata struct {
 	// Compacting is true and IsIntraL0Compacting is false for an L0 file, the
 	// file must be part of a compaction to Lbase.
 	IsIntraL0Compacting bool
-	CompactionState     CompactionState
+
+	CompactionState CompactionState
 	// True if compaction of this file has been explicitly requested.
 	// Previously, RocksDB and earlier versions of Pebble allowed this
 	// flag to be set by a user table property collector. Some earlier

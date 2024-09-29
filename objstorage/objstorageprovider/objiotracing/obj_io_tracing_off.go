@@ -50,10 +50,39 @@ func (t *Tracer) WrapWritable(
 // traces created under that context).
 func WithReason(ctx context.Context, reason Reason) context.Context { return ctx }
 
+type ctxInfoKey struct{}
+
+type ctxInfo struct {
+	reason       Reason
+	blockType    BlockType
+	levelPlusOne uint8
+}
+
+func infoFromCtx(ctx context.Context) ctxInfo {
+	res := ctx.Value(ctxInfoKey{})
+	if res == nil {
+		return ctxInfo{}
+	}
+	return res.(ctxInfo)
+}
+
+func withInfo(ctx context.Context, info ctxInfo) context.Context {
+	return context.WithValue(ctx, ctxInfoKey{}, info)
+}
+
 // WithBlockType creates a context that has an associated BlockType (which ends up in
 // traces created under that context).
-func WithBlockType(ctx context.Context, blockType BlockType) context.Context { return ctx }
+func WithBlockType(ctx context.Context, blockType BlockType) context.Context {
+	info := infoFromCtx(ctx)
+	info.blockType = blockType
+	return withInfo(ctx, info)
+}
 
 // WithLevel creates a context that has an associated level (which ends up in
 // traces created under that context).
 func WithLevel(ctx context.Context, level int) context.Context { return ctx }
+
+func GetBlockType(ctx context.Context) BlockType {
+	info := infoFromCtx(ctx)
+	return info.blockType
+}

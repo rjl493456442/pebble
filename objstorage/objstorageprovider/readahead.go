@@ -4,8 +4,6 @@
 
 package objstorageprovider
 
-import "github.com/cockroachdb/pebble/internal/invariants"
-
 const (
 	// Constants for dynamic readahead of data blocks. Note that the size values
 	// make sense as some multiple of the default block size; and they should
@@ -22,11 +20,14 @@ type readaheadState struct {
 	// Number of sequential reads.
 	numReads         int64
 	maxReadaheadSize int64
+
 	// Size issued to the next call to Prefetch. Starts at or above
 	// initialReadaheadSize and grows exponentially until maxReadaheadSize.
 	size int64
+
 	// prevSize is the size used in the last Prefetch call.
 	prevSize int64
+
 	// The byte offset up to which the OS has been asked to read ahead / cached.
 	// When reading ahead, reads up to this limit should not incur an IO
 	// operation. Reads after this limit can benefit from a new call to
@@ -83,9 +84,6 @@ func (rs *readaheadState) recordCacheHit(offset, blockLength int64) {
 // Returns a size value (greater than 0) that should be prefetched if readahead
 // would be beneficial.
 func (rs *readaheadState) maybeReadahead(offset, blockLength int64) int64 {
-	if invariants.Enabled && rs.maxReadaheadSize == 0 {
-		panic("readaheadState not initialized")
-	}
 	currentReadEnd := offset + blockLength
 	if rs.numReads >= minFileReadsForReadahead {
 		// The minimum threshold of sequential reads to justify reading ahead

@@ -289,6 +289,11 @@ func WithLevel(ctx context.Context, level int) context.Context {
 	return withInfo(ctx, info)
 }
 
+func GetBlockType(ctx context.Context) BlockType {
+	info := infoFromCtx(ctx)
+	return info.blockType
+}
+
 const (
 	eventSize            = int(unsafe.Sizeof(Event{}))
 	targetEntriesPerFile = 256 * 1024 * 1024 / eventSize // 256MB files

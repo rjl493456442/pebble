@@ -35,22 +35,28 @@ var errWriterClosed = errors.New("pebble: writer is closed")
 
 // WriterMetadata holds info about a finished sstable.
 type WriterMetadata struct {
-	Size          uint64
-	SmallestPoint InternalKey
+	Size uint64
+
 	// LargestPoint, LargestRangeKey, LargestRangeDel should not be accessed
 	// before Writer.Close is called, because they may only be set on
 	// Writer.Close.
-	LargestPoint     InternalKey
+	SmallestPoint InternalKey
+	LargestPoint  InternalKey
+
 	SmallestRangeDel InternalKey
 	LargestRangeDel  InternalKey
+
 	SmallestRangeKey InternalKey
 	LargestRangeKey  InternalKey
-	HasPointKeys     bool
-	HasRangeDelKeys  bool
-	HasRangeKeys     bool
-	SmallestSeqNum   uint64
-	LargestSeqNum    uint64
-	Properties       Properties
+
+	HasPointKeys    bool
+	HasRangeDelKeys bool
+	HasRangeKeys    bool
+
+	SmallestSeqNum uint64
+	LargestSeqNum  uint64
+
+	Properties Properties
 }
 
 // SetSmallestPointKey sets the smallest point key to the given key.
@@ -115,32 +121,39 @@ type Writer struct {
 	writable objstorage.Writable
 	meta     WriterMetadata
 	err      error
+
 	// cacheID and fileNum are used to remove blocks written to the sstable from
 	// the cache, providing a defense in depth against bugs which cause cache
 	// collisions.
 	cacheID uint64
 	fileNum base.DiskFileNum
+
 	// The following fields are copied from Options.
 	blockSize               int
 	blockSizeThreshold      int
 	indexBlockSize          int
 	indexBlockSizeThreshold int
-	compare                 Compare
-	split                   Split
-	formatKey               base.FormatKey
-	compression             Compression
-	separator               Separator
-	successor               Successor
-	tableFormat             TableFormat
-	isStrictObsolete        bool
-	writingToLowestLevel    bool
-	cache                   *cache.Cache
-	restartInterval         int
-	checksumType            ChecksumType
+
+	compare     Compare
+	split       Split
+	formatKey   base.FormatKey
+	compression Compression
+
+	separator Separator
+	successor Successor
+
+	tableFormat          TableFormat
+	isStrictObsolete     bool
+	writingToLowestLevel bool
+	cache                *cache.Cache
+	restartInterval      int
+	checksumType         ChecksumType
+
 	// disableKeyOrderChecks disables the checks that keys are added to an
 	// sstable in order. It is intended for internal use only in the construction
 	// of invalid sstables for testing. See tool/make_test_sstables.go.
 	disableKeyOrderChecks bool
+
 	// With two level indexes, the index/filter of a SST file is partitioned into
 	// smaller blocks with an additional top-level index on them. When reading an
 	// index/filter, only the top-level index is loaded into memory. The two level
@@ -157,19 +170,24 @@ type Writer struct {
 	// smaller memory footprint, can be used to prevent the entire index block from
 	// being loaded into the block cache.
 	twoLevelIndex bool
+
 	// Internal flag to allow creation of range-del-v1 format blocks. Only used
 	// for testing. Note that v2 format blocks are backwards compatible with v1
 	// format blocks.
-	rangeDelV1Format    bool
-	indexBlock          *indexBlockBuf
-	rangeDelBlock       blockWriter
-	rangeKeyBlock       blockWriter
-	topLevelIndexBlock  blockWriter
+	rangeDelV1Format bool
+
+	indexBlock         *indexBlockBuf
+	rangeDelBlock      blockWriter
+	rangeKeyBlock      blockWriter
+	topLevelIndexBlock blockWriter
+
 	props               Properties
 	propCollectors      []TablePropertyCollector
 	blockPropCollectors []BlockPropertyCollector
-	obsoleteCollector   obsoleteKeyBlockPropertyCollector
-	blockPropsEncoder   blockPropertiesEncoder
+
+	obsoleteCollector obsoleteKeyBlockPropertyCollector
+	blockPropsEncoder blockPropertiesEncoder
+
 	// filter accumulates the filter block. If populated, the filter ingests
 	// either the output of w.split (i.e. a prefix extractor) if w.split is not
 	// nil, or the full keys otherwise.
@@ -235,6 +253,7 @@ type coordinationState struct {
 
 func (c *coordinationState) init(parallelismEnabled bool, writer *Writer) {
 	c.parallelismEnabled = parallelismEnabled
+
 	// useMutex is false regardless of parallelismEnabled, because we do not do
 	// parallel compression yet.
 	c.sizeEstimate.useMutex = false
@@ -574,6 +593,7 @@ type blockBuf struct {
 	// blockTrailerLen bytes, (5 * binary.MaxVarintLen64) bytes, and most
 	// likely large enough for a block handle with properties.
 	tmp [blockHandleLikelyMaxLen]byte
+
 	// compressedBuf is the destination buffer for compression. It is re-used over the
 	// lifetime of the blockBuf, avoiding the allocation of a temporary buffer for each block.
 	compressedBuf []byte
@@ -590,10 +610,11 @@ func (b *blockBuf) clear() {
 }
 
 // A dataBlockBuf holds all the state required to compress and write a data block to disk.
-// A dataBlockBuf begins its lifecycle owned by the Writer client goroutine. The Writer
-// client goroutine adds keys to the sstable, writing directly into a dataBlockBuf's blockWriter
-// until the block is full. Once a dataBlockBuf's block is full, the dataBlockBuf may be passed
-// to other goroutines for compression and file I/O.
+// A dataBlockBuf begins its lifecycle owned by the Writer client goroutine.
+//
+// The Writer client goroutine adds keys to the sstable, writing directly into a
+// dataBlockBuf's blockWriter until the block is full. Once a dataBlockBuf's block is full,
+// the dataBlockBuf may be passed to other goroutines for compression and file I/O.
 type dataBlockBuf struct {
 	blockBuf
 	dataBlock blockWriter
@@ -602,6 +623,7 @@ type dataBlockBuf struct {
 	// next byte slice to be compressed. The uncompressed byte slice will be backed by the
 	// dataBlock.buf.
 	uncompressed []byte
+
 	// compressed is a reference to a byte slice which is owned by the dataBlockBuf. It is the
 	// compressed byte slice which must be written to disk. The compressed byte slice may be
 	// backed by the dataBlock.buf, or the dataBlockBuf.compressedBuf, depending on whether

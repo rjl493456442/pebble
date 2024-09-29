@@ -5,7 +5,9 @@
 package bloom
 
 import (
+	"bytes"
 	"crypto/rand"
+	mrand "math/rand"
 	"strings"
 	"testing"
 
@@ -141,6 +143,24 @@ loop:
 
 	if nMediocreFilters > nGoodFilters/5 {
 		t.Errorf("%d mediocre filters but only %d good filters", nMediocreFilters, nGoodFilters)
+	}
+}
+
+func BenchmarkFilter(b *testing.B) {
+	keys := make([][]byte, 0, 100*1000)
+	var buf [32]byte
+	for i := 0; i < 100*1000; i++ {
+		rand.Read(buf[:])
+		keys = append(keys, bytes.Clone(buf[:]))
+	}
+	f := newTableFilter(10, keys...)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		key := keys[mrand.Intn(len(keys))]
+		f.MayContain(key)
 	}
 }
 
