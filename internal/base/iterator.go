@@ -354,6 +354,7 @@ type InternalIteratorStats struct {
 	BlockBytes uint64
 	// Subset of BlockBytes that were in the block cache.
 	BlockBytesInCache uint64
+	BlockReadCount    uint64
 	// BlockReadDuration accumulates the duration spent fetching blocks
 	// due to block cache misses.
 	// TODO(sumeer): this currently excludes the time spent in Reader creation,
