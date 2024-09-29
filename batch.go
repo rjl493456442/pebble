@@ -574,7 +574,8 @@ func (b *Batch) Get(key []byte) ([]byte, io.Closer, error) {
 	if b.index == nil {
 		return nil, nil, ErrNotIndexed
 	}
-	return b.db.getInternal(key, b, nil /* snapshot */)
+	v, closer, _, _, _, err := b.db.getInternal(key, b, nil /* snapshot */)
+	return v, closer, err
 }
 
 func (b *Batch) prepareDeferredKeyValueRecord(keyLen, valueLen int, kind InternalKeyKind) {

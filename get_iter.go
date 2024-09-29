@@ -34,6 +34,7 @@ type getIter struct {
 	version      *version
 	iterKey      *InternalKey
 	iterValue    base.LazyValue
+	iOpts        internalIterOpts
 	err          error
 }
 
@@ -159,7 +160,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 				g.l0 = g.l0[:n-1]
 				iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 				g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
-					files, manifest.L0Sublevel(n), internalIterOpts{})
+					files, manifest.L0Sublevel(n), g.iOpts)
 				g.levelIter.initRangeDel(&g.rangeDelIter)
 				bc := levelIterBoundaryContext{}
 				g.levelIter.initBoundaryContext(&bc)
@@ -191,7 +192,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 
 		iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
 		g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
-			g.version.Levels[g.level].Iter(), manifest.Level(g.level), internalIterOpts{})
+			g.version.Levels[g.level].Iter(), manifest.Level(g.level), g.iOpts)
 		g.levelIter.initRangeDel(&g.rangeDelIter)
 		bc := levelIterBoundaryContext{}
 		g.levelIter.initBoundaryContext(&bc)

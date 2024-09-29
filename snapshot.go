@@ -51,7 +51,8 @@ func (s *Snapshot) Get(key []byte) ([]byte, io.Closer, error) {
 	if s.db == nil {
 		panic(ErrClosed)
 	}
-	return s.db.getInternal(key, nil /* batch */, s)
+	v, closer, _, _, _, err := s.db.getInternal(key, nil /* batch */, s)
+	return v, closer, err
 }
 
 // NewIter returns an iterator that is unpositioned (Iterator.Valid() will

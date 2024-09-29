@@ -517,6 +517,11 @@ func (d *DB) TestOnlyWaitForCleaning() {
 // slice will remain valid until the returned Closer is closed. On success, the
 // caller MUST call closer.Close() or a memory leak will occur.
 func (d *DB) Get(key []byte) ([]byte, io.Closer, error) {
+	v, closer, _, _, _, err := d.getInternal(key, nil /* batch */, nil /* snapshot */)
+	return v, closer, err
+}
+
+func (d *DB) GetWithStats(key []byte) ([]byte, io.Closer, uint64, uint64, time.Duration, error) {
 	return d.getInternal(key, nil /* batch */, nil /* snapshot */)
 }
 
@@ -532,7 +537,7 @@ var getIterAllocPool = sync.Pool{
 	},
 }
 
-func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, error) {
+func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, uint64, uint64, time.Duration, error) {
 	if err := d.closed.Load(); err != nil {
 		panic(err)
 	}
@@ -564,6 +569,9 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		mem:      readState.memtables,
 		l0:       readState.current.L0SublevelFiles,
 		version:  readState.current,
+		iOpts: internalIterOpts{
+			stats: &base.InternalIteratorStats{},
+		},
 	}
 
 	// Strip off memtables which cannot possibly contain the seqNum being read
@@ -592,11 +600,11 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 	if !i.First() {
 		err := i.Close()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, 0, 0, err
 		}
-		return nil, nil, ErrNotFound
+		return nil, nil, 0, 0, 0, ErrNotFound
 	}
-	return i.Value(), i, nil
+	return i.Value(), i, get.iOpts.stats.BlockBytes, get.iOpts.stats.BlockBytesInCache, get.iOpts.stats.BlockReadDuration, nil
 }
 
 // Set sets the value for the given key. It overwrites any previous value
