@@ -527,7 +527,7 @@ func (c *tableCacheShard) newIters(
 		hideObsoletePoints = true
 	}
 	if internalOpts.bytesIterated != nil {
-		iter, err = cr.NewCompactionIter(internalOpts.bytesIterated, rp, internalOpts.bufferPool)
+		iter, err = cr.NewCompactionIter(internalOpts.bytesIterated, rp, internalOpts.bufferPool, internalOpts.stats)
 	} else {
 		iter, err = cr.NewIterWithBlockPropertyFiltersAndContextEtc(
 			ctx, opts.GetLowerBound(), opts.GetUpperBound(), filterer, hideObsoletePoints, useFilter,

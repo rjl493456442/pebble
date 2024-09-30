@@ -80,6 +80,11 @@ type CompactionInfo struct {
 	Done          bool
 	Err           error
 
+	BytesRead         uint64
+	BytesCache        uint64
+	BlockLoad         uint64
+	BlockLoadDuration time.Duration
+
 	SingleLevelOverlappingRatio float64
 	MultiLevelOverlappingRatio  float64
 
@@ -171,6 +176,12 @@ type FlushInfo struct {
 	// TotalDuration is the total wall-time duration of the flush, including
 	// applying the flush to the database. TotalDuration is always ≥ Duration.
 	TotalDuration time.Duration
+
+	BytesRead         uint64
+	BytesCache        uint64
+	BlockLoad         uint64
+	BlockLoadDuration time.Duration
+
 	// Ingest is set to true if the flush is handling tables that were added to
 	// the flushable queue via an ingestion operation.
 	Ingest bool

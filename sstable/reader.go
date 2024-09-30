@@ -191,6 +191,7 @@ type CommonReader interface {
 		bytesIterated *uint64,
 		rp ReaderProvider,
 		bufferPool *BufferPool,
+		stats *base.InternalIteratorStats,
 	) (Iterator, error)
 	EstimateDiskUsage(start, end []byte) (uint64, error)
 	CommonProperties() *CommonProperties
@@ -346,13 +347,13 @@ func (r *Reader) NewIter(lower, upper []byte) (Iterator, error) {
 // the number of bytes iterated. If an error occurs, NewCompactionIter cleans up
 // after itself and returns a nil iterator.
 func (r *Reader) NewCompactionIter(
-	bytesIterated *uint64, rp ReaderProvider, bufferPool *BufferPool,
+	bytesIterated *uint64, rp ReaderProvider, bufferPool *BufferPool, stats *base.InternalIteratorStats,
 ) (Iterator, error) {
-	return r.newCompactionIter(bytesIterated, rp, nil, bufferPool)
+	return r.newCompactionIter(bytesIterated, rp, nil, bufferPool, stats)
 }
 
 func (r *Reader) newCompactionIter(
-	bytesIterated *uint64, rp ReaderProvider, v *virtualState, bufferPool *BufferPool,
+	bytesIterated *uint64, rp ReaderProvider, v *virtualState, bufferPool *BufferPool, stats *base.InternalIteratorStats,
 ) (Iterator, error) {
 	if r.Properties.IndexType == twoLevelIndex {
 		i := twoLevelIterPool.Get().(*twoLevelIterator)
@@ -360,7 +361,7 @@ func (r *Reader) newCompactionIter(
 			context.Background(),
 			r, v, nil /* lower */, nil /* upper */, nil,
 			false /* useFilter */, v != nil && v.isForeign, /* hideObsoletePoints */
-			nil /* stats */, rp, bufferPool,
+			stats /* stats */, rp, bufferPool,
 		)
 		if err != nil {
 			return nil, err

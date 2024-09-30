@@ -367,11 +367,14 @@ type InternalIteratorStats struct {
 	// Bytes in keys that were iterated over. Currently, only point keys are
 	// included.
 	KeyBytes uint64
+
 	// Bytes in values that were iterated over. Currently, only point values are
 	// included. For separated values, this is the size of the handle.
 	ValueBytes uint64
+
 	// The count of points iterated over.
 	PointCount uint64
+
 	// Points that were iterated over that were covered by range tombstones. It
 	// can be useful for discovering instances of
 	// https://github.com/cockroachdb/pebble/issues/1070.
