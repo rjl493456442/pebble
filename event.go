@@ -84,6 +84,7 @@ type CompactionInfo struct {
 	BytesCache        uint64
 	BlockLoad         uint64
 	BlockLoadDuration time.Duration
+	Durations         []time.Duration
 
 	SingleLevelOverlappingRatio float64
 	MultiLevelOverlappingRatio  float64

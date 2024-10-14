@@ -51,7 +51,7 @@ func (s *Snapshot) Get(key []byte) ([]byte, io.Closer, error) {
 	if s.db == nil {
 		panic(ErrClosed)
 	}
-	v, closer, _, _, _, _, err := s.db.getInternal(key, nil /* batch */, s)
+	v, closer, _, _, _, _, _, err := s.db.getInternal(key, nil /* batch */, s)
 	return v, closer, err
 }
 

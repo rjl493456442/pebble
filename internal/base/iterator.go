@@ -360,6 +360,8 @@ type InternalIteratorStats struct {
 	// TODO(sumeer): this currently excludes the time spent in Reader creation,
 	// and in reading the rangedel and rangekey blocks. Fix that.
 	BlockReadDuration time.Duration
+	Durations         []time.Duration
+
 	// The following can repeatedly count the same points if they are iterated
 	// over multiple times. Additionally, they may count a point twice when
 	// switching directions. The latter could be improved if needed.
@@ -405,7 +407,9 @@ type InternalIteratorStats struct {
 func (s *InternalIteratorStats) Merge(from InternalIteratorStats) {
 	s.BlockBytes += from.BlockBytes
 	s.BlockBytesInCache += from.BlockBytesInCache
+	s.BlockReadCount += from.BlockReadCount
 	s.BlockReadDuration += from.BlockReadDuration
+	s.Durations = append(s.Durations, from.Durations...)
 	s.KeyBytes += from.KeyBytes
 	s.ValueBytes += from.ValueBytes
 	s.PointCount += from.PointCount

@@ -584,6 +584,7 @@ func (r *Reader) readBlock(
 		stats.BlockBytes += bh.Length
 		stats.BlockReadDuration += readDuration
 		stats.BlockReadCount += 1
+		stats.Durations = append(stats.Durations, readDuration)
 	}
 	if err != nil {
 		compressed.release()

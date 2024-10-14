@@ -2831,10 +2831,10 @@ func (stats *IteratorStats) SafeFormat(s redact.SafePrinter, verb rune) {
 		)
 	}
 
-	if stats.InternalStats != (InternalIteratorStats{}) {
-		s.SafeString("; ")
-		stats.InternalStats.SafeFormat(s, verb)
-	}
+	//if stats.InternalStats != (InternalIteratorStats{}) {
+	//	s.SafeString("; ")
+	//	stats.InternalStats.SafeFormat(s, verb)
+	//}
 	if stats.RangeKeyStats != (RangeKeyIteratorStats{}) {
 		s.SafeString(", ")
 		stats.RangeKeyStats.SafeFormat(s, verb)
