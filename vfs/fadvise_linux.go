@@ -11,7 +11,8 @@ import "golang.org/x/sys/unix"
 
 // Calls Fadvise with FADV_RANDOM to disable readahead on a file descriptor.
 func fadviseRandom(f uintptr) error {
-	return unix.Fadvise(int(f), 0, 0, unix.FADV_RANDOM)
+	//return nil
+	return unix.Fadvise(int(f), 0, 0, unix.FADV_SEQUENTIAL)
 }
 
 // Calls Fadvise with FADV_SEQUENTIAL to enable readahead on a file descriptor.
