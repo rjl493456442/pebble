@@ -16,5 +16,6 @@ func fadviseRandom(f uintptr) error {
 
 // Calls Fadvise with FADV_SEQUENTIAL to enable readahead on a file descriptor.
 func fadviseSequential(f uintptr) error {
-	return unix.Fadvise(int(f), 0, 0, unix.FADV_SEQUENTIAL)
+	//err := unix.Fadvise(int(f), 0, 0, unix.FADV_SEQUENTIAL)
+	return unix.Fadvise(int(f), 0, 0, unix.FADV_DONTNEED)
 }
