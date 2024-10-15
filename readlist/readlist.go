@@ -21,6 +21,7 @@ type readTask struct {
 	offset int64
 	done   chan error
 	reader Reader
+	comp   bool
 }
 
 type ReadList struct {
@@ -32,8 +33,15 @@ type ReadList struct {
 	compTasks []*readTask
 	lock      sync.RWMutex
 
-	readN atomic.Int64
-	compN atomic.Int64
+	readN            atomic.Int64
+	readDuration     atomic.Int64
+	readPureDuration atomic.Int64
+	readSize         atomic.Int64
+
+	compN            atomic.Int64
+	compDuration     atomic.Int64
+	compPureDuration atomic.Int64
+	compSize         atomic.Int64
 }
 
 func NewReadList() *ReadList {
@@ -41,7 +49,7 @@ func NewReadList() *ReadList {
 		closed: make(chan struct{}),
 		wake:   make(chan struct{}, 1),
 	}
-	for i := 0; i < runtime.NumCPU(); i++ {
+	for i := 0; i < runtime.NumCPU()/2; i++ {
 		x.wg.Add(1)
 		go x.run()
 	}
@@ -57,9 +65,34 @@ func (l *ReadList) report() {
 	for {
 		select {
 		case <-timer.C:
-			fmt.Println("comp tasks", l.compN.Load(), "read tasks", l.readN.Load())
-			l.compN.Store(0)
+			var avgComp, avgPureComp time.Duration
+			var avgCompSize int64
+			if l.compN.Load() > 0 {
+				avgComp = time.Duration(l.compDuration.Load() / l.compN.Load())
+				avgPureComp = time.Duration(l.compPureDuration.Load() / l.compN.Load())
+				avgCompSize = l.compSize.Load() / l.compN.Load()
+			}
+			var avgRead, avgPureRead time.Duration
+			var avgReadSize int64
+			if l.readN.Load() > 0 {
+				avgRead = time.Duration(l.readDuration.Load() / l.readN.Load())
+				avgPureRead = time.Duration(l.readPureDuration.Load() / l.readN.Load())
+				avgReadSize = l.readSize.Load() / l.readN.Load()
+			}
+			fmt.Println(
+				"comp tasks", l.compN.Load(), "compTime", time.Duration(l.compDuration.Load()), "compAvg", avgComp, "compPure", avgPureComp, "compSize", avgCompSize,
+				"read tasks", l.readN.Load(), time.Duration(l.readDuration.Load()), "readAvg", avgRead, "readPure", avgPureRead, "readSize", avgReadSize,
+			)
 			l.readN.Store(0)
+			l.readDuration.Store(0)
+			l.readPureDuration.Store(0)
+			l.readSize.Store(0)
+
+			l.compN.Store(0)
+			l.compDuration.Store(0)
+			l.compPureDuration.Store(0)
+			l.compSize.Store(0)
+
 		case <-l.closed:
 			return
 		}
@@ -77,12 +110,18 @@ func (l *ReadList) Close() {
 
 func (l *ReadList) Read(ctx context.Context, dest []byte, offset int64, reader Reader) error {
 	l.readN.Add(1)
-	return l.read(ctx, dest, offset, reader, false)
+	s := time.Now()
+	err := l.read(ctx, dest, offset, reader, false)
+	l.readDuration.Add(time.Since(s).Nanoseconds())
+	return err
 }
 
 func (l *ReadList) CompRead(ctx context.Context, dest []byte, offset int64, reader Reader) error {
 	l.compN.Add(1)
-	return l.read(ctx, dest, offset, reader, true)
+	s := time.Now()
+	err := l.read(ctx, dest, offset, reader, true)
+	l.compDuration.Add(time.Since(s).Nanoseconds())
+	return err
 }
 
 func (l *ReadList) read(ctx context.Context, dest []byte, offset int64, reader Reader, comp bool) error {
@@ -101,6 +140,7 @@ func (l *ReadList) read(ctx context.Context, dest []byte, offset int64, reader R
 			offset: offset,
 			reader: reader,
 			done:   done,
+			comp:   false,
 		})
 	} else {
 		l.compTasks = append(l.compTasks, &readTask{
@@ -109,6 +149,7 @@ func (l *ReadList) read(ctx context.Context, dest []byte, offset int64, reader R
 			offset: offset,
 			reader: reader,
 			done:   done,
+			comp:   true,
 		})
 	}
 	l.lock.Unlock()
@@ -123,7 +164,16 @@ func (l *ReadList) read(ctx context.Context, dest []byte, offset int64, reader R
 }
 
 func (l *ReadList) process(t *readTask) {
+	s := time.Now()
 	t.done <- t.reader.ReadAt(t.ctx, t.dest, t.offset)
+	d := time.Since(s)
+	if t.comp {
+		l.compPureDuration.Add(d.Nanoseconds())
+		l.compSize.Add(int64(len(t.dest)))
+	} else {
+		l.readPureDuration.Add(d.Nanoseconds())
+		l.readSize.Add(int64(len(t.dest)))
+	}
 }
 
 func (l *ReadList) run() {
@@ -143,8 +193,14 @@ func (l *ReadList) run() {
 			}
 		case <-l.wake:
 			l.lock.Lock()
-			reads := l.readTasks
-			l.readTasks = nil
+			var reads []*readTask
+			if len(l.readTasks) > 100 {
+				reads = l.readTasks[:100]
+				l.readTasks = l.readTasks[100:]
+			} else {
+				reads = l.readTasks
+				l.readTasks = nil
+			}
 			l.lock.Unlock()
 
 			for _, read := range reads {
