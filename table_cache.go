@@ -470,6 +470,9 @@ func (c *tableCacheShard) newIters(
 		c.unrefValue(v)
 		return nil, nil, err
 	}
+	if internalOpts.bytesIterated != nil {
+		v.reader.SetCompaction()
+	}
 
 	provider := dbOpts.objProvider
 	// Check if this file is a foreign file.

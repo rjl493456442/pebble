@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"github.com/cockroachdb/pebble/readlist"
 	"io"
 	"os"
 	"sort"
@@ -199,6 +200,7 @@ type CommonReader interface {
 
 // Reader is a table reader.
 type Reader struct {
+	compaction        bool
 	readable          objstorage.Readable
 	cacheID           uint64
 	fileNum           base.DiskFileNum
@@ -561,11 +563,26 @@ func (r *Reader) readBlock(
 	}
 
 	readStartTime := time.Now()
+
 	var err error
-	if readHandle != nil {
-		err = readHandle.ReadAt(ctx, compressed.get(), int64(bh.Offset))
+	if rlist := r.opts.ReadList; rlist != nil {
+		var xx readlist.Reader
+		if readHandle != nil {
+			xx = readHandle
+		} else {
+			xx = r.readable
+		}
+		if r.compaction {
+			err = rlist.CompRead(ctx, compressed.get(), int64(bh.Offset), xx)
+		} else {
+			err = rlist.Read(ctx, compressed.get(), int64(bh.Offset), xx)
+		}
 	} else {
-		err = r.readable.ReadAt(ctx, compressed.get(), int64(bh.Offset))
+		if readHandle != nil {
+			err = readHandle.ReadAt(ctx, compressed.get(), int64(bh.Offset))
+		} else {
+			err = r.readable.ReadAt(ctx, compressed.get(), int64(bh.Offset))
+		}
 	}
 	readDuration := time.Since(readStartTime)
 	// TODO(sumeer): should the threshold be configurable.
@@ -1185,6 +1202,10 @@ func NewReader(f objstorage.Readable, o ReaderOptions, extraOpts ...ReaderOption
 	}
 
 	return r, nil
+}
+
+func (r *Reader) SetCompaction() {
+	r.compaction = true
 }
 
 // ReadableFile describes the smallest subset of vfs.File that is required for
