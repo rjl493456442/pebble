@@ -163,7 +163,7 @@ func (rh *vfsReadHandle) ReadAt(_ context.Context, p []byte, offset int64) error
 func (rh *vfsReadHandle) SetupForCompaction() {
 	rh.readaheadMode = rh.r.readaheadConfig.Informed
 	if rh.readaheadMode == FadviseSequential {
-		rh.switchToOSReadahead()
+		//rh.switchToOSReadahead()
 	}
 }
 

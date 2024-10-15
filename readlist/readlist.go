@@ -3,7 +3,6 @@ package readlist
 import (
 	"context"
 	"fmt"
-	"golang.org/x/exp/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -208,17 +207,15 @@ func (l *ReadList) run() {
 				l.process(read)
 			}
 
-			if rand.Intn(5) == 0 {
-				l.lock.Lock()
-				var t *readTask
-				if len(l.compTasks) > 0 {
-					t = l.compTasks[0]
-					l.compTasks = l.compTasks[1:]
-				}
-				l.lock.Unlock()
-				if t != nil {
-					l.process(t)
-				}
+			l.lock.Lock()
+			var t *readTask
+			if len(l.compTasks) > 0 {
+				t = l.compTasks[0]
+				l.compTasks = l.compTasks[1:]
+			}
+			l.lock.Unlock()
+			if t != nil {
+				l.process(t)
 			}
 		}
 	}
