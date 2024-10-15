@@ -3,6 +3,7 @@ package readlist
 import (
 	"context"
 	"fmt"
+	"golang.org/x/exp/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -49,7 +50,7 @@ func NewReadList() *ReadList {
 		closed: make(chan struct{}),
 		wake:   make(chan struct{}, 1),
 	}
-	for i := 0; i < runtime.NumCPU()/2; i++ {
+	for i := 0; i < runtime.NumCPU(); i++ {
 		x.wg.Add(1)
 		go x.run()
 	}
@@ -207,15 +208,17 @@ func (l *ReadList) run() {
 				l.process(read)
 			}
 
-			l.lock.Lock()
-			var t *readTask
-			if len(l.compTasks) > 0 {
-				t = l.compTasks[0]
-				l.compTasks = l.compTasks[1:]
-			}
-			l.lock.Unlock()
-			if t != nil {
-				l.process(t)
+			if rand.Intn(5) == 0 {
+				l.lock.Lock()
+				var t *readTask
+				if len(l.compTasks) > 0 {
+					t = l.compTasks[0]
+					l.compTasks = l.compTasks[1:]
+				}
+				l.lock.Unlock()
+				if t != nil {
+					l.process(t)
+				}
 			}
 		}
 	}
