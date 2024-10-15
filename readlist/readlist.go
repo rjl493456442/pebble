@@ -45,6 +45,8 @@ func NewReadList() *ReadList {
 		x.wg.Add(1)
 		go x.run()
 	}
+	x.wg.Add(1)
+	go x.report()
 	return x
 }
 
