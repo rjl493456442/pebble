@@ -83,8 +83,6 @@ const InvalidFd uintptr = ^(uintptr(0))
 type OpenOption interface {
 	// Apply is called on the file handle after it's opened.
 	Apply(File)
-
-	IsRandom() bool
 }
 
 // FS is a namespace for files.
@@ -229,20 +227,7 @@ func (defaultFS) Link(oldname, newname string) error {
 }
 
 func (defaultFS) Open(name string, opts ...OpenOption) (File, error) {
-	var random bool
-	for _, opt := range opts {
-		if opt.IsRandom() {
-			random = true
-			break
-		}
-	}
-	var osFile *os.File
-	var err error
-	if random {
-		osFile, err = os.OpenFile(name, os.O_RDONLY|syscall.O_CLOEXEC, 0)
-	} else {
-		osFile, err = os.OpenFile(name, os.O_RDONLY|syscall.O_CLOEXEC, 0)
-	}
+	osFile, err := os.OpenFile(name, os.O_RDONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -318,8 +303,6 @@ func (defaultFS) PathDir(path string) string {
 
 type randomReadsOption struct{}
 
-func (randomReadsOption) IsRandom() bool { return true }
-
 // RandomReadsOption is an OpenOption that optimizes opened file handle for
 // random reads, by calling  fadvise() with POSIX_FADV_RANDOM on Linux systems
 // to disable readahead.
@@ -333,8 +316,6 @@ func (randomReadsOption) Apply(f File) {
 }
 
 type sequentialReadsOption struct{}
-
-func (sequentialReadsOption) IsRandom() bool { return false }
 
 // SequentialReadsOption is an OpenOption that optimizes opened file handle for
 // sequential reads, by calling fadvise() with POSIX_FADV_SEQUENTIAL on Linux

@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/objiotracing"
 	"io"
 	"math"
 	"os"
@@ -734,8 +733,7 @@ func indexLayoutString(t *testing.T, r *Reader) string {
 		require.NoError(t, err)
 		fmt.Fprintf(&buf, " %s: size %d\n", string(key.UserKey), bh.Length)
 		if twoLevelIndex {
-			b, _, err := r.readBlock(
-				context.Background(), objiotracing.UnknownBlock, bh.BlockHandle, nil, nil, nil, nil)
+			b, _, err := r.readBlock(context.Background(), bh.BlockHandle, nil, nil, nil, nil)
 			require.NoError(t, err)
 			defer b.Release()
 			iter2, err := newBlockIter(r.Compare, b.Get())

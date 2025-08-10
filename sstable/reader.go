@@ -654,7 +654,9 @@ func (r *Reader) readBlock(
 		compressed.release()
 		return bufferHandle{}, false, err
 	}
-	stats.BlockCheckSumDurations = append(stats.BlockCheckSumDurations, time.Since(checksumStart))
+	if stats != nil {
+		stats.BlockCheckSumDurations = append(stats.BlockCheckSumDurations, time.Since(checksumStart))
+	}
 
 	btyp := blockType(compressed.get()[bh.Length])
 	compressed.truncate(int(bh.Length))
@@ -670,7 +672,9 @@ func (r *Reader) readBlock(
 			compressed.release()
 			return bufferHandle{}, false, err
 		}
-		stats.BlockDecompressDurations = append(stats.BlockDecompressDurations, time.Since(decompressStart))
+		if stats != nil {
+			stats.BlockDecompressDurations = append(stats.BlockDecompressDurations, time.Since(decompressStart))
+		}
 
 		if bufferPool != nil {
 			decompressed = cacheValueOrBuf{buf: bufferPool.Alloc(decodedLen)}
