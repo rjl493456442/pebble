@@ -366,7 +366,8 @@ type InternalIteratorStats struct {
 	// due to block cache misses.
 	// TODO(sumeer): this currently excludes the time spent in Reader creation,
 	// and in reading the rangedel and rangekey blocks. Fix that.
-	BlockReadDuration time.Duration
+	BlockReadDuration      time.Duration
+	BlockCacheReadDuration time.Duration
 
 	// BlockReadDurations is a list of duration corresponds to the time
 	// spent on resolving blocks from the storage.
@@ -432,6 +433,7 @@ func (s *InternalIteratorStats) Merge(from InternalIteratorStats) {
 	s.BlockReadCount += from.BlockReadCount
 	s.BlockReadCountCache += from.BlockReadCountCache
 	s.BlockReadDuration += from.BlockReadDuration
+	s.BlockCacheReadDuration += from.BlockCacheReadDuration
 
 	s.BlockBytesCache += from.BlockBytesCache
 	s.BlockReadDurations = append(s.BlockReadDurations, from.BlockReadDurations...)

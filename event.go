@@ -85,6 +85,7 @@ type CompactionInfo struct {
 	BlockLoad                uint64
 	BlockLoadCache           uint64
 	BlockLoadDuration        time.Duration
+	BlockCacheLoadDuration   time.Duration
 	BlockLoadDurations       []time.Duration
 	BlockCheckSumDurations   []time.Duration
 	BlockDecompressDurations []time.Duration

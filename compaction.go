@@ -2789,6 +2789,8 @@ func (d *DB) compact1(c *compaction, errChannel chan error) (err error) {
 	info.BlockLoad = c.stats.BlockReadCount
 	info.BlockLoadCache = c.stats.BlockReadCountCache
 	info.BlockLoadDuration = c.stats.BlockReadDuration
+	info.BlockCacheLoadDuration = c.stats.BlockCacheReadDuration
+
 	info.BlockLoadDurations = c.stats.BlockReadDurations
 	info.BlockCheckSumDurations = c.stats.BlockCheckSumDurations
 	info.BlockDecompressDurations = c.stats.BlockDecompressDurations

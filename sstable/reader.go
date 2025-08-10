@@ -560,6 +560,7 @@ func (r *Reader) readBlock(
 	stats *base.InternalIteratorStats,
 	bufferPool *BufferPool,
 ) (handle bufferHandle, hit bool, _ error) {
+	ss := time.Now()
 	if h := r.opts.Cache.Get(r.cacheID, r.fileNum, bh.Offset); h.Get() != nil {
 		// Cache hit.
 		if readHandle != nil {
@@ -570,6 +571,7 @@ func (r *Reader) readBlock(
 			stats.BlockBytesCache += bh.Length
 			stats.BlockReadCountCache += 1
 			stats.CacheTypes = append(stats.CacheTypes, uint8(objiotracing.GetBlockType(ctx)))
+			stats.BlockCacheReadDuration += time.Since(ss)
 		}
 		// This block is already in the cache; return a handle to existing vlaue
 		// in the cache.
