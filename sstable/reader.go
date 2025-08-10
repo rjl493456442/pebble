@@ -568,6 +568,7 @@ func (r *Reader) readBlock(
 		if stats != nil {
 			stats.BlockBytes += bh.Length
 			stats.BlockBytesCache += bh.Length
+			stats.BlockReadCountCache += 1
 			stats.CacheTypes = append(stats.CacheTypes, uint8(objiotracing.GetBlockType(ctx)))
 		}
 		// This block is already in the cache; return a handle to existing vlaue
@@ -672,9 +673,6 @@ func (r *Reader) readBlock(
 			compressed.release()
 			return bufferHandle{}, false, err
 		}
-		if stats != nil {
-			stats.BlockDecompressDurations = append(stats.BlockDecompressDurations, time.Since(decompressStart))
-		}
 
 		if bufferPool != nil {
 			decompressed = cacheValueOrBuf{buf: bufferPool.Alloc(decodedLen)}
@@ -686,6 +684,9 @@ func (r *Reader) readBlock(
 			return bufferHandle{}, false, err
 		}
 		compressed.release()
+		if stats != nil {
+			stats.BlockDecompressDurations = append(stats.BlockDecompressDurations, time.Since(decompressStart))
+		}
 	}
 
 	if transform != nil {

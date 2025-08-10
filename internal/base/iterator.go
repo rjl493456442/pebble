@@ -359,7 +359,8 @@ type InternalIteratorStats struct {
 	BlockBytesCache uint64
 
 	// BlockReadCount is the number of blocks resolved from the storage.
-	BlockReadCount uint64
+	BlockReadCount      uint64
+	BlockReadCountCache uint64
 
 	// BlockReadDuration accumulates the duration spent fetching blocks
 	// due to block cache misses.
@@ -429,6 +430,7 @@ type InternalIteratorStats struct {
 func (s *InternalIteratorStats) Merge(from InternalIteratorStats) {
 	s.BlockBytes += from.BlockBytes
 	s.BlockReadCount += from.BlockReadCount
+	s.BlockReadCountCache += from.BlockReadCountCache
 	s.BlockReadDuration += from.BlockReadDuration
 
 	s.BlockBytesCache += from.BlockBytesCache
