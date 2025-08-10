@@ -2123,11 +2123,6 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 		Done:       true,
 		Ingest:     ingest,
 		Err:        err,
-
-		BytesRead:         c.stats.BlockBytes,
-		BytesCache:        c.stats.BlockBytesCache,
-		BlockLoad:         c.stats.BlockReadCount,
-		BlockLoadDuration: c.stats.BlockReadDuration,
 	}
 	if err == nil {
 		for i := range ve.NewFiles {

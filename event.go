@@ -182,11 +182,6 @@ type FlushInfo struct {
 	// applying the flush to the database. TotalDuration is always ≥ Duration.
 	TotalDuration time.Duration
 
-	BytesRead         uint64 // The number of bytes read
-	BytesCache        uint64
-	BlockLoad         uint64
-	BlockLoadDuration time.Duration
-
 	// Ingest is set to true if the flush is handling tables that were added to
 	// the flushable queue via an ingestion operation.
 	Ingest bool
