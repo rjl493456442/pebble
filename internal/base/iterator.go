@@ -369,7 +369,9 @@ type InternalIteratorStats struct {
 
 	// BlockReadDurations is a list of duration corresponds to the time
 	// spent on resolving blocks from the storage.
-	BlockReadDurations []time.Duration
+	BlockReadDurations       []time.Duration
+	BlockCheckSumDurations   []time.Duration
+	BlockDecompressDurations []time.Duration
 
 	DiskTypes  []uint8
 	CacheTypes []uint8
@@ -431,6 +433,8 @@ func (s *InternalIteratorStats) Merge(from InternalIteratorStats) {
 
 	s.BlockBytesCache += from.BlockBytesCache
 	s.BlockReadDurations = append(s.BlockReadDurations, from.BlockReadDurations...)
+	s.BlockCheckSumDurations = append(s.BlockCheckSumDurations, from.BlockCheckSumDurations...)
+	s.BlockDecompressDurations = append(s.BlockDecompressDurations, from.BlockDecompressDurations...)
 	s.DiskTypes = append(s.DiskTypes, from.DiskTypes...)
 	s.CacheTypes = append(s.CacheTypes, from.CacheTypes...)
 

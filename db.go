@@ -510,13 +510,15 @@ func (d *DB) TestOnlyWaitForCleaning() {
 }
 
 type ReadStats struct {
-	BlockBytes         uint64
-	BlockBytesCache    uint64
-	BlockReadCount     uint64
-	BlockReadDuration  time.Duration
-	BlockReadDurations []time.Duration
-	DiskTypes          []uint8
-	CacheTypes         []uint8
+	BlockBytes               uint64
+	BlockBytesCache          uint64
+	BlockReadCount           uint64
+	BlockReadDuration        time.Duration
+	BlockReadDurations       []time.Duration
+	BlockCheckSumDurations   []time.Duration
+	BlockDecompressDurations []time.Duration
+	DiskTypes                []uint8
+	CacheTypes               []uint8
 }
 
 // Get gets the value for the given key. It returns ErrNotFound if the DB does
@@ -615,13 +617,15 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		return nil, nil, ReadStats{}, ErrNotFound
 	}
 	stat := ReadStats{
-		BlockBytes:         get.iOpts.stats.BlockBytes,
-		BlockBytesCache:    get.iOpts.stats.BlockBytesCache,
-		BlockReadCount:     get.iOpts.stats.BlockReadCount,
-		BlockReadDuration:  get.iOpts.stats.BlockReadDuration,
-		BlockReadDurations: get.iOpts.stats.BlockReadDurations,
-		DiskTypes:          get.iOpts.stats.DiskTypes,
-		CacheTypes:         get.iOpts.stats.CacheTypes,
+		BlockBytes:               get.iOpts.stats.BlockBytes,
+		BlockBytesCache:          get.iOpts.stats.BlockBytesCache,
+		BlockReadCount:           get.iOpts.stats.BlockReadCount,
+		BlockReadDuration:        get.iOpts.stats.BlockReadDuration,
+		BlockReadDurations:       get.iOpts.stats.BlockReadDurations,
+		BlockCheckSumDurations:   get.iOpts.stats.BlockCheckSumDurations,
+		BlockDecompressDurations: get.iOpts.stats.BlockDecompressDurations,
+		DiskTypes:                get.iOpts.stats.DiskTypes,
+		CacheTypes:               get.iOpts.stats.CacheTypes,
 	}
 	return i.Value(), i, stat, nil
 }

@@ -80,13 +80,15 @@ type CompactionInfo struct {
 	Done          bool
 	Err           error
 
-	BytesRead          uint64
-	BytesCache         uint64
-	BlockLoad          uint64
-	BlockLoadDuration  time.Duration
-	BlockLoadDurations []time.Duration
-	DiskTypes          []uint8
-	CacheTypes         []uint8
+	BytesRead                uint64
+	BytesCache               uint64
+	BlockLoad                uint64
+	BlockLoadDuration        time.Duration
+	BlockLoadDurations       []time.Duration
+	BlockCheckSumDurations   []time.Duration
+	BlockDecompressDurations []time.Duration
+	DiskTypes                []uint8
+	CacheTypes               []uint8
 
 	SingleLevelOverlappingRatio float64
 	MultiLevelOverlappingRatio  float64

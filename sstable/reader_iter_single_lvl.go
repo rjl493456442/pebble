@@ -395,10 +395,15 @@ func (i *singleLevelIterator) loadBlock(dir int8) loadBlockResult {
 		// blockIntersects
 	}
 	ctx := objiotracing.WithBlockType(i.ctx, objiotracing.DataBlock)
-	block, err := i.reader.readBlock(ctx, i.dataBH, nil /* transform */, i.dataRH, i.stats, i.bufferPool)
+	block, hit, err := i.reader.readBlock(ctx, i.dataBH, nil /* transform */, i.dataRH, i.stats, i.bufferPool)
 	if err != nil {
 		i.err = err
 		return loadBlockFailed
+	}
+	if hit {
+		BCacheStats.DataHits.Add(1)
+	} else {
+		BCacheStats.DataMisses.Add(1)
 	}
 	i.err = i.data.initHandle(i.cmp, block, i.reader.Properties.GlobalSeqNum, i.hideObsoletePoints)
 	if i.err != nil {
@@ -416,7 +421,15 @@ func (i *singleLevelIterator) readBlockForVBR(
 	ctx context.Context, h BlockHandle, stats *base.InternalIteratorStats,
 ) (bufferHandle, error) {
 	ctx = objiotracing.WithBlockType(ctx, objiotracing.ValueBlock)
-	return i.reader.readBlock(ctx, h, nil, i.vbRH, stats, i.bufferPool)
+	handler, hit, err := i.reader.readBlock(ctx, h, nil, i.vbRH, stats, i.bufferPool)
+	if err == nil {
+		if hit {
+			BCacheStats.ValueHits.Add(1)
+		} else {
+			BCacheStats.ValueMisses.Add(1)
+		}
+	}
+	return handler, err
 }
 
 // resolveMaybeExcluded is invoked when the block-property filterer has found
