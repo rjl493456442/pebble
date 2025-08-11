@@ -353,6 +353,9 @@ type InternalIteratorStats struct {
 	// containing points, and filter blocks are included.
 	BlockBytes uint64
 
+	BlockByteSlice []uint64
+	Types          []uint8
+
 	// Bytes in the loaded blocks, resolved from the cache. If the block was
 	// compressed, this is the compressed bytes. Currently, only the index blocks,
 	// data blocks containing points, and filter blocks are included.
@@ -434,6 +437,9 @@ func (s *InternalIteratorStats) Merge(from InternalIteratorStats) {
 	s.BlockReadCountCache += from.BlockReadCountCache
 	s.BlockReadDuration += from.BlockReadDuration
 	s.BlockCacheReadDuration += from.BlockCacheReadDuration
+
+	s.BlockByteSlice = append(s.BlockByteSlice, from.BlockByteSlice...)
+	s.Types = append(s.Types, from.Types...)
 
 	s.BlockBytesCache += from.BlockBytesCache
 	s.BlockReadDurations = append(s.BlockReadDurations, from.BlockReadDurations...)

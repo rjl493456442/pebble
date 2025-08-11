@@ -572,6 +572,9 @@ func (r *Reader) readBlock(
 			stats.BlockReadCountCache += 1
 			stats.CacheTypes = append(stats.CacheTypes, uint8(objiotracing.GetBlockType(ctx)))
 			stats.BlockCacheReadDuration += time.Since(ss)
+
+			stats.BlockByteSlice = append(stats.BlockByteSlice, bh.Length)
+			stats.Types = append(stats.Types, uint8(objiotracing.GetBlockType(ctx)))
 		}
 		// This block is already in the cache; return a handle to existing vlaue
 		// in the cache.
@@ -608,26 +611,6 @@ func (r *Reader) readBlock(
 		err = r.readable.ReadAt(ctx, compressed.get(), int64(bh.Offset))
 	}
 
-	//var err error
-	//if rlist := r.opts.ReadList; rlist != nil {
-	//	var xx readlist.Reader
-	//	if readHandle != nil {
-	//		xx = readHandle
-	//	} else {
-	//		xx = r.readable
-	//	}
-	//	if r.compaction {
-	//		err = rlist.CompRead(ctx, compressed.get(), int64(bh.Offset), xx)
-	//	} else {
-	//		err = rlist.Read(ctx, compressed.get(), int64(bh.Offset), xx)
-	//	}
-	//} else {
-	//	if readHandle != nil {
-	//		err = readHandle.ReadAt(ctx, compressed.get(), int64(bh.Offset))
-	//	} else {
-	//		err = r.readable.ReadAt(ctx, compressed.get(), int64(bh.Offset))
-	//	}
-	//}
 	readDuration := time.Since(readStartTime)
 	// TODO(sumeer): should the threshold be configurable.
 	const slowReadTracingThreshold = 5 * time.Millisecond
@@ -647,6 +630,9 @@ func (r *Reader) readBlock(
 		stats.BlockReadCount += 1
 		stats.BlockReadDurations = append(stats.BlockReadDurations, readDuration)
 		stats.DiskTypes = append(stats.DiskTypes, uint8(objiotracing.GetBlockType(ctx)))
+
+		stats.BlockByteSlice = append(stats.BlockByteSlice, bh.Length)
+		stats.Types = append(stats.Types, uint8(objiotracing.GetBlockType(ctx)))
 	}
 	if err != nil {
 		compressed.release()

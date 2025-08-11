@@ -515,6 +515,9 @@ type ReadStats struct {
 	BlockReadCount      uint64
 	BlockReadCountCache uint64
 
+	BlockByteSlice []uint64
+	Types          []uint8
+
 	BlockReadDuration      time.Duration
 	BlockCacheReadDuration time.Duration
 	PrepareDuration        time.Duration
@@ -640,6 +643,9 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		BlockBytesCache:     get.iOpts.stats.BlockBytesCache,
 		BlockReadCount:      get.iOpts.stats.BlockReadCount,
 		BlockReadCountCache: get.iOpts.stats.BlockReadCountCache,
+
+		BlockByteSlice: get.iOpts.stats.BlockByteSlice,
+		Types:          get.iOpts.stats.Types,
 
 		BlockReadDuration:      get.iOpts.stats.BlockReadDuration,
 		BlockCacheReadDuration: get.iOpts.stats.BlockCacheReadDuration,
