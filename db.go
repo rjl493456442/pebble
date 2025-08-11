@@ -515,14 +515,21 @@ type ReadStats struct {
 	BlockReadCount      uint64
 	BlockReadCountCache uint64
 
-	BlockReadDuration            time.Duration
-	BlockCacheReadDuration       time.Duration
-	PrepareDuration              time.Duration
-	MemoryLookupDuration         time.Duration
-	LevelZeroLookupDuration      time.Duration
+	BlockReadDuration      time.Duration
+	BlockCacheReadDuration time.Duration
+	PrepareDuration        time.Duration
+	MemoryLookupDuration   time.Duration
+
+	LevelZeroLookupDuration   time.Duration
+	LevelZeroFindFileDuration time.Duration
+	LevelZeroScanFileDuration time.Duration
+
 	LevelNonZeroLookupDuration   time.Duration
+	LevelNonZeroInitDuration     time.Duration
 	LevelNonZeroFindFileDuration time.Duration
 	LevelNonZeroScanFileDuration time.Duration
+
+	TotalTables int
 
 	BlockReadDurations       []time.Duration
 	BlockCheckSumDurations   []time.Duration
@@ -634,14 +641,21 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		BlockReadCount:      get.iOpts.stats.BlockReadCount,
 		BlockReadCountCache: get.iOpts.stats.BlockReadCountCache,
 
-		BlockReadDuration:            get.iOpts.stats.BlockReadDuration,
-		BlockCacheReadDuration:       get.iOpts.stats.BlockCacheReadDuration,
-		PrepareDuration:              pp,
-		MemoryLookupDuration:         get.memoryDuration,
-		LevelZeroLookupDuration:      get.levelZeroDuration,
+		BlockReadDuration:      get.iOpts.stats.BlockReadDuration,
+		BlockCacheReadDuration: get.iOpts.stats.BlockCacheReadDuration,
+		PrepareDuration:        pp,
+		MemoryLookupDuration:   get.memoryDuration,
+
+		LevelZeroLookupDuration:   get.levelZeroDuration,
+		LevelZeroFindFileDuration: get.levelZeroFindFile,
+		LevelZeroScanFileDuration: get.levelZeroScanFile,
+
 		LevelNonZeroLookupDuration:   get.levelNonZeroDuration,
+		LevelNonZeroInitDuration:     get.levelNonZeroInit,
 		LevelNonZeroFindFileDuration: get.levelNonZeroFindFile,
 		LevelNonZeroScanFileDuration: get.levelNonZeroScanFile,
+
+		TotalTables: get.totalTables,
 
 		BlockReadDurations:       get.iOpts.stats.BlockReadDurations,
 		BlockCheckSumDurations:   get.iOpts.stats.BlockCheckSumDurations,
