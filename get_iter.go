@@ -42,6 +42,9 @@ type getIter struct {
 	memoryDuration       time.Duration
 	levelZeroDuration    time.Duration
 	levelNonZeroDuration time.Duration
+	levelNonZeroInit     time.Duration
+	levelNonZeroFindFile time.Duration
+	levelNonZeroScanFile time.Duration
 }
 
 // TODO(sumeer): CockroachDB code doesn't use getIter, but, for completeness,
@@ -222,6 +225,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		g.levelIter.initBoundaryContext(&bc)
 		g.level++
 		g.iter = &g.levelIter
+		g.levelNonZeroInit += time.Since(ss)
 
 		// Compute the key prefix for bloom filtering if split function is
 		// specified, or use the user key as default.
@@ -235,6 +239,8 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 			g.iterValue = base.LazyValue{}
 		}
 		g.levelNonZeroDuration += time.Since(ss)
+		g.levelNonZeroFindFile += g.levelIter.findFileDuration
+		g.levelNonZeroScanFile += g.levelIter.scanFileDuration
 	}
 }
 

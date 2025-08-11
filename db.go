@@ -515,12 +515,14 @@ type ReadStats struct {
 	BlockReadCount      uint64
 	BlockReadCountCache uint64
 
-	BlockReadDuration          time.Duration
-	BlockCacheReadDuration     time.Duration
-	PrepareDuration            time.Duration
-	MemoryLookupDuration       time.Duration
-	LevelZeroLookupDuration    time.Duration
-	LevelNonZeroLookupDuration time.Duration
+	BlockReadDuration            time.Duration
+	BlockCacheReadDuration       time.Duration
+	PrepareDuration              time.Duration
+	MemoryLookupDuration         time.Duration
+	LevelZeroLookupDuration      time.Duration
+	LevelNonZeroLookupDuration   time.Duration
+	LevelNonZeroFindFileDuration time.Duration
+	LevelNonZeroScanFileDuration time.Duration
 
 	BlockReadDurations       []time.Duration
 	BlockCheckSumDurations   []time.Duration
@@ -632,12 +634,14 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		BlockReadCount:      get.iOpts.stats.BlockReadCount,
 		BlockReadCountCache: get.iOpts.stats.BlockReadCountCache,
 
-		BlockReadDuration:          get.iOpts.stats.BlockReadDuration,
-		BlockCacheReadDuration:     get.iOpts.stats.BlockCacheReadDuration,
-		PrepareDuration:            pp,
-		MemoryLookupDuration:       get.memoryDuration,
-		LevelZeroLookupDuration:    get.levelZeroDuration,
-		LevelNonZeroLookupDuration: get.levelNonZeroDuration,
+		BlockReadDuration:            get.iOpts.stats.BlockReadDuration,
+		BlockCacheReadDuration:       get.iOpts.stats.BlockCacheReadDuration,
+		PrepareDuration:              pp,
+		MemoryLookupDuration:         get.memoryDuration,
+		LevelZeroLookupDuration:      get.levelZeroDuration,
+		LevelNonZeroLookupDuration:   get.levelNonZeroDuration,
+		LevelNonZeroFindFileDuration: get.levelNonZeroFindFile,
+		LevelNonZeroScanFileDuration: get.levelNonZeroScanFile,
 
 		BlockReadDurations:       get.iOpts.stats.BlockReadDurations,
 		BlockCheckSumDurations:   get.iOpts.stats.BlockCheckSumDurations,
