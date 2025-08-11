@@ -38,13 +38,17 @@ type getIter struct {
 	iOpts        internalIterOpts
 	err          error
 
-	inMemory             bool
-	memoryDuration       time.Duration
-	levelZeroDuration    time.Duration
+	inMemory          bool
+	memoryDuration    time.Duration
+	levelZeroDuration time.Duration
+	levelZeroFindFile time.Duration
+	levelZeroScanFile time.Duration
+
 	levelNonZeroDuration time.Duration
 	levelNonZeroInit     time.Duration
 	levelNonZeroFindFile time.Duration
 	levelNonZeroScanFile time.Duration
+	totalTables          int
 }
 
 // TODO(sumeer): CockroachDB code doesn't use getIter, but, for completeness,
@@ -200,6 +204,9 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 					g.iterValue = base.LazyValue{}
 				}
 				g.levelZeroDuration += time.Since(ss)
+				g.levelZeroFindFile += g.levelIter.findFileDuration
+				g.levelZeroScanFile += g.levelIter.scanFileDuration
+				g.totalTables++
 				continue
 			}
 			g.level++
@@ -233,6 +240,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		if g.comparer.Split != nil {
 			prefix = g.key[:g.comparer.Split(g.key)]
 		}
+		ss = time.Now()
 		g.iterKey, g.iterValue = g.iter.SeekPrefixGE(prefix, g.key, base.SeekGEFlagsNone)
 		if bc.isSyntheticIterBoundsKey || bc.isIgnorableBoundaryKey {
 			g.iterKey = nil
@@ -241,6 +249,7 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		g.levelNonZeroDuration += time.Since(ss)
 		g.levelNonZeroFindFile += g.levelIter.findFileDuration
 		g.levelNonZeroScanFile += g.levelIter.scanFileDuration
+		g.totalTables++
 	}
 }
 
