@@ -510,12 +510,18 @@ func (d *DB) TestOnlyWaitForCleaning() {
 }
 
 type ReadStats struct {
-	BlockBytes               uint64
-	BlockBytesCache          uint64
-	BlockReadCount           uint64
-	BlockReadCountCache      uint64
-	BlockReadDuration        time.Duration
-	BlockCacheReadDuration   time.Duration
+	BlockBytes          uint64
+	BlockBytesCache     uint64
+	BlockReadCount      uint64
+	BlockReadCountCache uint64
+
+	BlockReadDuration          time.Duration
+	BlockCacheReadDuration     time.Duration
+	PrepareDuration            time.Duration
+	MemoryLookupDuration       time.Duration
+	LevelZeroLookupDuration    time.Duration
+	LevelNonZeroLookupDuration time.Duration
+
 	BlockReadDurations       []time.Duration
 	BlockCheckSumDurations   []time.Duration
 	BlockDecompressDurations []time.Duration
@@ -559,6 +565,7 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 	// Grab and reference the current readState. This prevents the underlying
 	// files in the associated version from being deleted if there is a current
 	// compaction. The readState is unref'd by Iterator.Close().
+	ss := time.Now()
 	readState := d.loadReadState()
 
 	// Determine the seqnum to read at after grabbing the read state (current and
@@ -610,6 +617,7 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		readState:    readState,
 		keyBuf:       buf.keyBuf,
 	}
+	pp := time.Since(ss)
 
 	if !i.First() {
 		err := i.Close()
@@ -619,12 +627,18 @@ func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, 
 		return nil, nil, ReadStats{}, ErrNotFound
 	}
 	stat := ReadStats{
-		BlockBytes:               get.iOpts.stats.BlockBytes,
-		BlockBytesCache:          get.iOpts.stats.BlockBytesCache,
-		BlockReadCount:           get.iOpts.stats.BlockReadCount,
-		BlockReadCountCache:      get.iOpts.stats.BlockReadCountCache,
-		BlockReadDuration:        get.iOpts.stats.BlockReadDuration,
-		BlockCacheReadDuration:   get.iOpts.stats.BlockCacheReadDuration,
+		BlockBytes:          get.iOpts.stats.BlockBytes,
+		BlockBytesCache:     get.iOpts.stats.BlockBytesCache,
+		BlockReadCount:      get.iOpts.stats.BlockReadCount,
+		BlockReadCountCache: get.iOpts.stats.BlockReadCountCache,
+
+		BlockReadDuration:          get.iOpts.stats.BlockReadDuration,
+		BlockCacheReadDuration:     get.iOpts.stats.BlockCacheReadDuration,
+		PrepareDuration:            pp,
+		MemoryLookupDuration:       get.memoryDuration,
+		LevelZeroLookupDuration:    get.levelZeroDuration,
+		LevelNonZeroLookupDuration: get.levelNonZeroDuration,
+
 		BlockReadDurations:       get.iOpts.stats.BlockReadDurations,
 		BlockCheckSumDurations:   get.iOpts.stats.BlockCheckSumDurations,
 		BlockDecompressDurations: get.iOpts.stats.BlockDecompressDurations,

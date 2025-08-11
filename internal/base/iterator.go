@@ -381,8 +381,8 @@ type InternalIteratorStats struct {
 	// Injected fields for debugging
 
 	// Get specific
-	Level int // -1 memory, 0 level0, etc
-	Find  bool
+	Level int  // -1 memory, 0 level0, etc
+	Found bool // flag if the entry is found or not
 
 	// Common for Get and Compaction
 
