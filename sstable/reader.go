@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"sync/atomic"
@@ -215,25 +217,31 @@ type CommonReader interface {
 
 // Reader is a table reader.
 type Reader struct {
-	compaction        bool
-	readable          objstorage.Readable
-	cacheID           uint64
-	fileNum           base.DiskFileNum
-	err               error
-	indexBH           BlockHandle
-	filterBH          BlockHandle
-	rangeDelBH        BlockHandle
-	rangeKeyBH        BlockHandle
+	compaction bool
+
+	readable objstorage.Readable
+	cacheID  uint64
+	fileNum  base.DiskFileNum
+	err      error
+
+	indexBH    BlockHandle            // index block
+	filterBH   BlockHandle            // filter block
+	rangeDelBH BlockHandle            // range deletion block
+	rangeKeyBH BlockHandle            // range key block
+	valueBIH   valueBlocksIndexHandle // value block
+
 	rangeDelTransform blockTransform
-	valueBIH          valueBlocksIndexHandle
-	propertiesBH      BlockHandle
-	metaIndexBH       BlockHandle
-	footerBH          BlockHandle
-	opts              ReaderOptions
-	Compare           Compare
-	FormatKey         base.FormatKey
-	Split             Split
-	tableFilter       *tableFilterReader
+
+	propertiesBH BlockHandle
+	metaIndexBH  BlockHandle
+	footerBH     BlockHandle
+
+	opts        ReaderOptions
+	Compare     Compare
+	FormatKey   base.FormatKey
+	Split       Split
+	tableFilter *tableFilterReader
+
 	// Keep types that are not multiples of 8 bytes at the end and with
 	// decreasing size.
 	Properties    Properties
@@ -241,6 +249,7 @@ type Reader struct {
 	rawTombstones bool
 	mergerOK      bool
 	checksumType  ChecksumType
+
 	// metaBufferPool is a buffer pool used exclusively when opening a table and
 	// loading its meta blocks. metaBufferPoolAlloc is used to batch-allocate
 	// the BufferPool.pool slice as a part of the Reader allocation. It's
@@ -552,6 +561,73 @@ func (b cacheValueOrBuf) truncate(n int) {
 	}
 }
 
+type ReadLatencyHistogram struct {
+	Levels []atomic.Int64
+	Total  atomic.Int64
+}
+
+func NewReadLatencyHistogram() *ReadLatencyHistogram {
+	return &ReadLatencyHistogram{
+		Levels: make([]atomic.Int64, 500),
+	}
+}
+
+func (h *ReadLatencyHistogram) findTier(latency time.Duration) int {
+	var (
+		tier       = 0
+		multiplier = float64(2)
+		base       = time.Microsecond * 20
+	)
+	// Loop until latency fits in the current tier
+	for float64(latency) >= math.Pow(multiplier, float64(tier))*float64(base) {
+		tier++
+	}
+	return tier
+}
+
+func tierToTimeRange(tier int) (time.Duration, time.Duration) {
+	var (
+		multiplier = float64(2)
+		base       = time.Microsecond * 20
+	)
+	if tier == 0 {
+		return 0, base
+	}
+	low := math.Pow(multiplier, float64(tier-1)) * float64(base)
+	high := math.Pow(multiplier, float64(tier)) * float64(base)
+	return time.Duration(low), time.Duration(high)
+}
+
+func (h *ReadLatencyHistogram) Add(latency time.Duration) {
+	t := h.findTier(latency)
+	if len(h.Levels) <= t {
+		fmt.Println("Read spike", latency.String())
+		return
+	}
+	h.Levels[t].Add(1)
+	h.Total.Add(1)
+
+}
+
+func (h *ReadLatencyHistogram) Log() {
+	if h.Total.Load()%5000 != 0 {
+		return
+	}
+	if h.Total.Load() == 0 {
+		return
+	}
+	var levels string
+	for i := 0; i < len(h.Levels); i++ {
+		if h.Levels[i].Load() != 0 {
+			lo, hi := tierToTimeRange(i)
+			levels += fmt.Sprintf("[%s-%s]: %d\t", lo, hi, h.Levels[i].Load())
+		}
+	}
+	fmt.Println(levels)
+}
+
+var GlobalReadLatencyHistogram = NewReadLatencyHistogram()
+
 func (r *Reader) readBlock(
 	ctx context.Context,
 	bh BlockHandle,
@@ -612,6 +688,9 @@ func (r *Reader) readBlock(
 	}
 
 	readDuration := time.Since(readStartTime)
+
+	GlobalReadLatencyHistogram.Add(readDuration)
+
 	// TODO(sumeer): should the threshold be configurable.
 	const slowReadTracingThreshold = 5 * time.Millisecond
 	// The invariants.Enabled path is for deterministic testing.

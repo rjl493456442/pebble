@@ -199,6 +199,7 @@ func (i *singleLevelIterator) init(
 	i.stats = stats
 	i.hideObsoletePoints = hideObsoletePoints
 	i.bufferPool = bufferPool
+
 	err = i.index.initHandle(i.cmp, indexH, r.Properties.GlobalSeqNum, false)
 	if err != nil {
 		// blockIter.Close releases indexH and always returns a nil error
@@ -206,6 +207,7 @@ func (i *singleLevelIterator) init(
 		return err
 	}
 	i.dataRH = objstorageprovider.UsePreallocatedReadHandle(ctx, r.readable, &i.dataRHPrealloc)
+
 	if r.tableFormat >= TableFormatPebblev3 {
 		if r.Properties.NumValueBlocks > 0 {
 			// NB: we cannot avoid this ~248 byte allocation, since valueBlockReader
