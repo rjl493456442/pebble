@@ -607,6 +607,7 @@ func (h *ReadLatencyHistogram) Add(latency time.Duration) {
 	h.Levels[t].Add(1)
 	h.Total.Add(1)
 
+	h.Log()
 }
 
 func (h *ReadLatencyHistogram) Log() {
