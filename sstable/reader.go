@@ -564,11 +564,14 @@ func (b cacheValueOrBuf) truncate(n int) {
 type ReadLatencyHistogram struct {
 	Levels []atomic.Int64
 	Total  atomic.Int64
+	Last   atomic.Int64
+	Title  string
 }
 
-func NewReadLatencyHistogram() *ReadLatencyHistogram {
+func NewReadLatencyHistogram(title string) *ReadLatencyHistogram {
 	return &ReadLatencyHistogram{
 		Levels: make([]atomic.Int64, 500),
+		Title:  title,
 	}
 }
 
@@ -611,9 +614,12 @@ func (h *ReadLatencyHistogram) Add(latency time.Duration) {
 }
 
 func (h *ReadLatencyHistogram) Log() {
-	if h.Total.Load()%5000 != 0 {
+	t := time.Unix(h.Last.Load(), 0)
+	if time.Since(t) < time.Second*16 {
 		return
 	}
+	h.Last.Store(time.Now().Unix())
+
 	if h.Total.Load() == 0 {
 		return
 	}
@@ -622,12 +628,16 @@ func (h *ReadLatencyHistogram) Log() {
 		if h.Levels[i].Load() != 0 {
 			lo, hi := tierToTimeRange(i)
 			levels += fmt.Sprintf("[%s-%s]: %d\t", lo, hi, h.Levels[i].Load())
+
+			h.Levels[i].Store(0)
 		}
 	}
-	fmt.Println(levels)
+	h.Total.Store(0)
+	fmt.Println("title", h.Title, levels)
 }
 
-var GlobalReadLatencyHistogram = NewReadLatencyHistogram()
+var FrontEndReadHistogram = NewReadLatencyHistogram("frontend")
+var CompactionReadHistogram = NewReadLatencyHistogram("compaction")
 
 func (r *Reader) readBlock(
 	ctx context.Context,
@@ -690,7 +700,11 @@ func (r *Reader) readBlock(
 
 	readDuration := time.Since(readStartTime)
 
-	GlobalReadLatencyHistogram.Add(readDuration)
+	if !r.compaction {
+		FrontEndReadHistogram.Add(readDuration)
+	} else {
+		CompactionReadHistogram.Add(readDuration)
+	}
 
 	// TODO(sumeer): should the threshold be configurable.
 	const slowReadTracingThreshold = 5 * time.Millisecond
