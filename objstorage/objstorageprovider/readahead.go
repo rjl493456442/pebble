@@ -27,6 +27,7 @@ type readaheadState struct {
 
 	// prevSize is the size used in the last Prefetch call.
 	prevSize int64
+
 	// The byte offset up to which the OS has been asked to read ahead / cached.
 	// When reading ahead, reads up to this limit should not incur an IO
 	// operation. Reads after this limit can benefit from a new call to
