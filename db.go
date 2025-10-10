@@ -2507,6 +2507,9 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 				size += d.mu.mem.queue[i].totalBytes()
 			}
 			if size >= uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize {
+				if b.flushable != nil {
+					fmt.Println("Too much data cached in the memory", "size", size, "limit", uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize)
+				}
 				// We have filled up the current memtable, but already queued memtables
 				// are still flushing, so we wait.
 				if !stalled {
@@ -2526,6 +2529,9 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		l0ReadAmp := d.mu.versions.currentVersion().L0Sublevels.ReadAmplification()
 		if l0ReadAmp >= d.opts.L0StopWritesThreshold {
 			// There are too many level-0 files, so we wait.
+			if b.flushable != nil {
+				fmt.Println("Too much data cached in the memory", "l0ReadAmp", l0ReadAmp, "limit", d.opts.L0StopWritesThreshold)
+			}
 			if !stalled {
 				stalled = true
 				d.opts.EventListener.WriteStallBegin(WriteStallBeginInfo{
