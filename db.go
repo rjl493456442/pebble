@@ -2508,7 +2508,9 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 			}
 			if size >= uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize {
 				if b.flushable != nil {
-					fmt.Println("Too much data cached in the memory", "size", size, "limit", uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize)
+					fmt.Println("Too much data cached in the memory", "size", size,
+						"stop", d.opts.MemTableStopWritesThreshold, "memtablesize", d.opts.MemTableSize,
+						"limit", uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize)
 				}
 				// We have filled up the current memtable, but already queued memtables
 				// are still flushing, so we wait.
