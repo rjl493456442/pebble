@@ -20,8 +20,9 @@ import (
 // key, it first looks in the index for the block that contains that key, and then
 // looks inside that block.
 type singleLevelIterator struct {
-	ctx context.Context
-	cmp Compare
+	level int
+	ctx   context.Context
+	cmp   Compare
 	// Global lower/upper bound for the iterator.
 	lower []byte
 	upper []byte

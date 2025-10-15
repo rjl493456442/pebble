@@ -224,7 +224,10 @@ func (g *getIter) Next() (*InternalKey, base.LazyValue) {
 		}
 
 		ss := time.Now()
-		iterOpts := IterOptions{logger: g.logger, snapshotForHideObsoletePoints: g.snapshot}
+		iterOpts := IterOptions{
+			logger:                        g.logger,
+			snapshotForHideObsoletePoints: g.snapshot,
+		}
 		g.levelIter.init(context.Background(), iterOpts, g.comparer, g.newIters,
 			g.version.Levels[g.level].Iter(), manifest.Level(g.level), g.iOpts)
 		g.levelIter.initRangeDel(&g.rangeDelIter)

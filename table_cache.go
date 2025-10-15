@@ -513,6 +513,10 @@ func (c *tableCacheShard) newIters(
 	if opts != nil {
 		useFilter = manifest.LevelToInt(opts.level) != 6 || opts.UseL6Filters
 		ctx = objiotracing.WithLevel(ctx, manifest.LevelToInt(opts.level))
+
+		if manifest.LevelToInt(opts.level) == 6 {
+			fmt.Println("useFilter for level6", useFilter)
+		}
 	}
 	tableFormat, err := v.reader.TableFormat()
 	if err != nil {
