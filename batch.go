@@ -1499,6 +1499,7 @@ func batchDecodeStr(data []byte) (odata []byte, s []byte, ok bool) {
 
 // SyncWait is to be used in conjunction with DB.ApplyNoSyncWait.
 func (b *Batch) SyncWait() error {
+	db := b.db
 	now := time.Now()
 	b.fsyncWait.Wait()
 	if b.commitErr != nil {
@@ -1507,6 +1508,9 @@ func (b *Batch) SyncWait() error {
 	waitDuration := time.Since(now)
 	b.commitStats.CommitWaitDuration += waitDuration
 	b.commitStats.TotalDuration += waitDuration
+	if db != nil {
+		db.maybeLogSlowWrite(b, true /* syncWAL */, true /* noSyncWait */, "sync-wait")
+	}
 	return b.commitErr
 }
 

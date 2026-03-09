@@ -2077,6 +2077,7 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 
 	jobID := d.mu.nextJobID
 	d.mu.nextJobID++
+	d.logFlushForWriteStallLocked(jobID, "begin", inputs, inputBytes, ingest, nil)
 	d.opts.EventListener.FlushBegin(FlushInfo{
 		JobID:      jobID,
 		Input:      inputs,
@@ -2270,6 +2271,7 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 	for i := range flushed {
 		close(flushed[i].flushed)
 	}
+	d.logFlushForWriteStallLocked(jobID, "end", inputs, inputBytes, ingest, err)
 
 	return bytesFlushed, err
 }

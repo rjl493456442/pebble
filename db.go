@@ -856,6 +856,9 @@ func (d *DB) applyInternal(batch *Batch, opts *WriteOptions, noSyncWait bool) er
 		// horked at this point.
 		d.opts.Logger.Fatalf("pebble: fatal commit error: %v", err)
 	}
+	if !noSyncWait {
+		d.maybeLogSlowWrite(batch, sync, noSyncWait, "apply")
+	}
 	// If this is a large batch, we need to clear the batch contents as the
 	// flushable batch may still be present in the flushables queue.
 	//
@@ -2412,18 +2415,25 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 
 	force := b == nil || b.flushable != nil
 	stalled := false
+	var stallID uint64
+	var stallReason string
+	var stallStart time.Time
+	var stallWakeups int
+	var nextStallDiagnosticTime time.Time
 	for {
 		if b != nil && b.flushable == nil {
 			err := d.mu.mem.mutable.prepare(b)
 			if err != arenaskl.ErrArenaFull {
 				if stalled {
 					d.opts.EventListener.WriteStallEnd()
+					d.logWriteStallEndLocked(stallID, stallReason, time.Since(stallStart), stallWakeups)
 				}
 				return err
 			}
 		} else if !force {
 			if stalled {
 				d.opts.EventListener.WriteStallEnd()
+				d.logWriteStallEndLocked(stallID, stallReason, time.Since(stallStart), stallWakeups)
 			}
 			return nil
 		}
@@ -2438,14 +2448,33 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 				// are still flushing, so we wait.
 				if !stalled {
 					stalled = true
+					stallID = nextWriteStallDiagnosticID()
+					stallReason = "memtable count limit reached"
+					stallStart = time.Now()
+					nextStallDiagnosticTime = stallStart.Add(writeStallDiagnosticLogInterval)
 					d.opts.EventListener.WriteStallBegin(WriteStallBeginInfo{
-						Reason: "memtable count limit reached",
+						Reason: stallReason,
 					})
+					d.logWriteStallBeginLocked(stallID, stallReason)
+				} else if stallReason != "memtable count limit reached" {
+					d.logWriteStallReasonChangeLocked(
+						stallID, stallReason, "memtable count limit reached", time.Since(stallStart), stallWakeups,
+					)
+					stallReason = "memtable count limit reached"
 				}
 				now := time.Now()
 				d.mu.compact.cond.Wait()
+				waitDuration := time.Since(now)
+				stallWakeups++
 				if b != nil {
-					b.commitStats.MemTableWriteStallDuration += time.Since(now)
+					b.commitStats.MemTableWriteStallDuration += waitDuration
+				}
+				if writeStallDiagnosticsEnabled() {
+					totalDuration := time.Since(stallStart)
+					if stallWakeups == 1 || !nextStallDiagnosticTime.After(time.Now()) {
+						d.logWriteStallWakeLocked(stallID, stallReason, waitDuration, totalDuration, stallWakeups)
+						nextStallDiagnosticTime = time.Now().Add(writeStallDiagnosticLogInterval)
+					}
 				}
 				continue
 			}
@@ -2455,14 +2484,33 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 			// There are too many level-0 files, so we wait.
 			if !stalled {
 				stalled = true
+				stallID = nextWriteStallDiagnosticID()
+				stallReason = "L0 file count limit exceeded"
+				stallStart = time.Now()
+				nextStallDiagnosticTime = stallStart.Add(writeStallDiagnosticLogInterval)
 				d.opts.EventListener.WriteStallBegin(WriteStallBeginInfo{
-					Reason: "L0 file count limit exceeded",
+					Reason: stallReason,
 				})
+				d.logWriteStallBeginLocked(stallID, stallReason)
+			} else if stallReason != "L0 file count limit exceeded" {
+				d.logWriteStallReasonChangeLocked(
+					stallID, stallReason, "L0 file count limit exceeded", time.Since(stallStart), stallWakeups,
+				)
+				stallReason = "L0 file count limit exceeded"
 			}
 			now := time.Now()
 			d.mu.compact.cond.Wait()
+			waitDuration := time.Since(now)
+			stallWakeups++
 			if b != nil {
-				b.commitStats.L0ReadAmpWriteStallDuration += time.Since(now)
+				b.commitStats.L0ReadAmpWriteStallDuration += waitDuration
+			}
+			if writeStallDiagnosticsEnabled() {
+				totalDuration := time.Since(stallStart)
+				if stallWakeups == 1 || !nextStallDiagnosticTime.After(time.Now()) {
+					d.logWriteStallWakeLocked(stallID, stallReason, waitDuration, totalDuration, stallWakeups)
+					nextStallDiagnosticTime = time.Now().Add(writeStallDiagnosticLogInterval)
+				}
 			}
 			continue
 		}
