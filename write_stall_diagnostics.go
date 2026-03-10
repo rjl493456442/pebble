@@ -51,6 +51,13 @@ func bytesForWriteStallDiagnostics(v uint64) string {
 	return string(humanize.Bytes.Uint64(v))
 }
 
+func signedBytesForWriteStallDiagnostics(v int64) string {
+	if v < 0 {
+		return "-" + bytesForWriteStallDiagnostics(uint64(-v))
+	}
+	return bytesForWriteStallDiagnostics(uint64(v))
+}
+
 func writeStallFlushDiagnosticsEnabled() bool {
 	return writeStallDiagnosticsEnabled() && writeStallDiagnosticActive.Load()
 }
@@ -81,6 +88,19 @@ func slowWriteDiagnosticsConfig() (enabled bool, threshold time.Duration) {
 	return slowWriteDiagnosticsEnabledV, slowWriteDiagnosticThresholdV
 }
 
+func flushableTypeLabel(f flushable) string {
+	switch f.(type) {
+	case *memTable:
+		return "mem"
+	case *flushableBatch:
+		return "fbatch"
+	case *ingestedFlushable:
+		return "ingest"
+	default:
+		return fmt.Sprintf("%T", f)
+	}
+}
+
 func (d *DB) writeStallBlockersLocked(reason string) string {
 	var blockers []string
 
@@ -96,46 +116,77 @@ func (d *DB) writeStallBlockersLocked(reason string) string {
 	}
 
 	memThreshold := uint64(d.opts.MemTableStopWritesThreshold) * d.opts.MemTableSize
-	blockers = append(blockers,
-		fmt.Sprintf("memtable-limit: queued-bytes=%s >= %s and flushable work exists (ready-prefix=%d, ready-total=%s)",
-			bytesForWriteStallDiagnostics(queueTotal),
-			bytesForWriteStallDiagnostics(memThreshold),
-			readyPrefix,
-			bytesForWriteStallDiagnostics(readyTotal)))
+	if queueTotal >= memThreshold {
+		switch {
+		case readyPrefix == 0 && len(d.mu.mem.queue) > 1:
+			blockers = append(blockers,
+				fmt.Sprintf("memtable-limit queued=%s >= %s, oldest-immutable-not-ready",
+					bytesForWriteStallDiagnostics(queueTotal),
+					bytesForWriteStallDiagnostics(memThreshold)))
+		case d.mu.compact.flushing:
+			blockers = append(blockers,
+				fmt.Sprintf("memtable-limit queued=%s >= %s, flush=in-progress, ready=%d/%s",
+					bytesForWriteStallDiagnostics(queueTotal),
+					bytesForWriteStallDiagnostics(memThreshold),
+					readyPrefix,
+					bytesForWriteStallDiagnostics(readyTotal)))
+		case readyPrefix > 0:
+			blockers = append(blockers,
+				fmt.Sprintf("memtable-limit queued=%s >= %s, flush=not-running, ready=%d/%s",
+					bytesForWriteStallDiagnostics(queueTotal),
+					bytesForWriteStallDiagnostics(memThreshold),
+					readyPrefix,
+					bytesForWriteStallDiagnostics(readyTotal)))
+		default:
+			blockers = append(blockers,
+				fmt.Sprintf("memtable-limit queued=%s >= %s",
+					bytesForWriteStallDiagnostics(queueTotal),
+					bytesForWriteStallDiagnostics(memThreshold)))
+		}
+	}
 
 	l0ReadAmp := d.mu.versions.currentVersion().L0Sublevels.ReadAmplification()
 	if l0ReadAmp >= d.opts.L0StopWritesThreshold {
 		blockers = append(blockers,
-			fmt.Sprintf("l0-limit: read-amp=%d >= %d with %d compactions in progress (%s)",
+			fmt.Sprintf("l0-limit amp=%d >= %d, compactions=%d, in-progress=%s",
 				l0ReadAmp,
 				d.opts.L0StopWritesThreshold,
 				d.mu.compact.compactingCount,
 				bytesForWriteStallDiagnostics(uint64(d.mu.versions.atomicInProgressBytes.Load()))))
 	}
 
-	return strings.Join(blockers, "; ")
+	if len(blockers) == 0 {
+		if reason == "" {
+			return "cleared"
+		}
+		return reason + " cleared"
+	}
+	return strings.Join(blockers, " | ")
 }
 
 func (d *DB) describeWriteStallEntryLocked(index int, entry *flushableEntry) string {
-	desc := fmt.Sprintf("#%d type=%T ready=%t forced=%t total=%s inuse=%s log=%s log-seq=%d",
-		index,
-		entry.flushable,
-		entry.readyForFlush(),
-		entry.flushForced,
-		bytesForWriteStallDiagnostics(entry.totalBytes()),
-		bytesForWriteStallDiagnostics(entry.inuseBytes()),
-		entry.logNum,
-		entry.logSeqNum)
+	parts := []string{
+		fmt.Sprintf("#%d:%s", index, flushableTypeLabel(entry.flushable)),
+		fmt.Sprintf("total=%s", bytesForWriteStallDiagnostics(entry.totalBytes())),
+		fmt.Sprintf("inuse=%s", bytesForWriteStallDiagnostics(entry.inuseBytes())),
+		fmt.Sprintf("log=%s", entry.logNum),
+	}
+	if entry.readyForFlush() {
+		parts = append(parts, "ready")
+	}
+	if entry.flushForced {
+		parts = append(parts, "forced")
+	}
 
 	switch t := entry.flushable.(type) {
 	case *memTable:
-		desc = fmt.Sprintf("%s writer-refs=%d", desc, t.writerRefs.Load())
+		parts = append(parts, fmt.Sprintf("refs=%d", t.writerRefs.Load()))
 	case *flushableBatch:
-		desc = fmt.Sprintf("%s batch-count=%d seq=%d", desc, len(t.offsets), t.seqNum)
+		parts = append(parts, fmt.Sprintf("count=%d", len(t.offsets)))
 	case *ingestedFlushable:
-		desc = fmt.Sprintf("%s files=%d", desc, len(t.files))
+		parts = append(parts, fmt.Sprintf("files=%d", len(t.files)))
 	}
-	return desc
+	return strings.Join(parts, ",")
 }
 
 func (d *DB) writeStallStateLocked(reason string) string {
@@ -170,11 +221,11 @@ func (d *DB) writeStallStateLocked(reason string) string {
 
 	mutable := "none"
 	if len(d.mu.mem.queue) > 0 {
-		mutable = d.describeWriteStallEntryLocked(len(d.mu.mem.queue)-1, d.mu.mem.queue[len(d.mu.mem.queue)-1])
+		mutable = d.describeWriteStallEntryLocked(len(d.mu.mem.queue)-1, d.mu.mem.queue[len(d.mu.mem.queue)-1]) + ",mutable"
 	}
 
 	return fmt.Sprintf(
-		"blockers=%s queue=%d total=%s inuse=%s mem-threshold=%s ready-prefix=%d ready-total=%s ready-inuse=%s l0-read-amp=%d/%d flushing=%t compacting=%d in-progress=%s oldest-unready=%s mutable=%s head=[%s]",
+		"blockers=[%s] | queue={n=%d total=%s inuse=%s threshold=%s ready=%d ready-total=%s ready-inuse=%s} | activity={l0=%d/%d flushing=%t compacting=%d in-progress=%s} | oldest-unready={%s} | mutable={%s} | head=[%s]",
 		d.writeStallBlockersLocked(reason),
 		len(d.mu.mem.queue),
 		bytesForWriteStallDiagnostics(queueTotal),
@@ -190,7 +241,7 @@ func (d *DB) writeStallStateLocked(reason string) string {
 		bytesForWriteStallDiagnostics(uint64(d.mu.versions.atomicInProgressBytes.Load())),
 		oldestUnready,
 		mutable,
-		strings.Join(head, "; "),
+		strings.Join(head, " | "),
 	)
 }
 
@@ -199,7 +250,7 @@ func (d *DB) logWriteStallBeginLocked(stallID uint64, reason string) {
 		return
 	}
 	writeStallDiagnosticActive.Store(true)
-	d.opts.Logger.Infof("write stall %d begin: reason=%s; %s", stallID, reason, d.writeStallStateLocked(reason))
+	d.opts.Logger.Infof("write stall begin | id=%d reason=%s | %s", stallID, reason, d.writeStallStateLocked(reason))
 }
 
 func (d *DB) logWriteStallReasonChangeLocked(
@@ -209,7 +260,7 @@ func (d *DB) logWriteStallReasonChangeLocked(
 		return
 	}
 	d.opts.Logger.Infof(
-		"write stall %d reason change after %s (wakeups=%d): %s -> %s; %s",
+		"write stall reason-change | id=%d total=%s wakeups=%d from=%s to=%s | %s",
 		stallID,
 		totalDuration,
 		wakeups,
@@ -226,7 +277,7 @@ func (d *DB) logWriteStallWakeLocked(
 		return
 	}
 	d.opts.Logger.Infof(
-		"write stall %d woke after wait=%s total=%s wakeups=%d: reason=%s; %s",
+		"write stall wake | id=%d wait=%s total=%s wakeups=%d reason=%s | %s",
 		stallID,
 		waitDuration,
 		totalDuration,
@@ -243,7 +294,7 @@ func (d *DB) logWriteStallEndLocked(
 		return
 	}
 	d.opts.Logger.Infof(
-		"write stall %d end after %s (wakeups=%d): %s",
+		"write stall end | id=%d total=%s wakeups=%d | %s",
 		stallID,
 		totalDuration,
 		wakeups,
@@ -263,7 +314,7 @@ func (d *DB) logFlushForWriteStallLocked(
 		errText = err.Error()
 	}
 	d.opts.Logger.Infof(
-		"write stall flush %s: job=%d inputs=%d input-bytes=%s ingest=%t err=%s; %s",
+		"write stall flush | phase=%s job=%d inputs=%d input-bytes=%s ingest=%t err=%s | %s",
 		phase,
 		jobID,
 		inputs,
@@ -285,23 +336,40 @@ func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phas
 		return
 	}
 
+	dbWorkDuration := stats.DBMutexHoldDuration -
+		stats.MemTableWriteStallDuration -
+		stats.L0ReadAmpWriteStallDuration -
+		stats.WALRotationDuration
+	if dbWorkDuration < 0 {
+		dbWorkDuration = 0
+	}
+
 	other := stats.TotalDuration -
 		stats.SemaphoreWaitDuration -
+		stats.CommitPipelineMutexWaitDuration -
+		stats.DBMutexWaitDuration -
 		stats.WALQueueWaitDuration -
+		stats.WALWriteDuration -
+		dbWorkDuration -
 		stats.MemTableWriteStallDuration -
 		stats.L0ReadAmpWriteStallDuration -
 		stats.WALRotationDuration -
+		stats.MemTableApplyDuration -
 		stats.CommitWaitDuration
 	if other < 0 {
 		other = 0
 	}
 
+	blockCacheMetrics := d.opts.Cache.Metrics()
+	tableCacheMetrics, filterMetrics := d.tableCache.metrics()
+
 	d.mu.Lock()
 	state := d.writeStallStateLocked("")
+	memTableReserved := d.memTableReserved.Load()
 	d.mu.Unlock()
 
 	d.opts.Logger.Infof(
-		"slow write detected: phase=%s total=%s threshold=%s sync=%t no-sync-wait=%t count=%d repr=%s memtable-est=%s flushable=%t stats=[semaphore=%s wal-queue=%s memtable-stall=%s l0-stall=%s wal-rotation=%s commit-wait=%s other=%s]; %s",
+		"slow write | phase=%s total=%s threshold=%s sync=%t no-sync-wait=%t | batch={count=%d repr=%s memtable-est=%s flushable=%t} | stats={semaphore=%s commit-pipeline-lock=%s db-lock=%s db-work=%s wal-queue=%s wal-write=%s memtable-stall=%s l0-stall=%s wal-rotation=%s memtable-apply=%s commit-wait=%s other=%s} | cache={block=%s/%s reserved=%s target=%s free-target=%s hit-rate=%.1f%% table-hit-rate=%.1f%% filter-utility=%.1f%% memtable-reserved=%s} | %s",
 		phase,
 		stats.TotalDuration,
 		threshold,
@@ -312,12 +380,26 @@ func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phas
 		bytesForWriteStallDiagnostics(batch.memTableSize),
 		batch.flushable != nil,
 		stats.SemaphoreWaitDuration,
+		stats.CommitPipelineMutexWaitDuration,
+		stats.DBMutexWaitDuration,
+		dbWorkDuration,
 		stats.WALQueueWaitDuration,
+		stats.WALWriteDuration,
 		stats.MemTableWriteStallDuration,
 		stats.L0ReadAmpWriteStallDuration,
 		stats.WALRotationDuration,
+		stats.MemTableApplyDuration,
 		stats.CommitWaitDuration,
 		other,
+		signedBytesForWriteStallDiagnostics(blockCacheMetrics.Size),
+		signedBytesForWriteStallDiagnostics(blockCacheMetrics.MaxSize),
+		signedBytesForWriteStallDiagnostics(blockCacheMetrics.ReservedSize),
+		signedBytesForWriteStallDiagnostics(blockCacheMetrics.TargetSize),
+		signedBytesForWriteStallDiagnostics(blockCacheMetrics.TargetSize-blockCacheMetrics.Size),
+		hitRate(blockCacheMetrics.Hits, blockCacheMetrics.Misses),
+		hitRate(tableCacheMetrics.Hits, tableCacheMetrics.Misses),
+		hitRate(filterMetrics.Hits, filterMetrics.Misses),
+		signedBytesForWriteStallDiagnostics(memTableReserved),
 		state,
 	)
 }

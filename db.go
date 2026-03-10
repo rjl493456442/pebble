@@ -877,7 +877,9 @@ func (d *DB) commitApply(b *Batch, mem *memTable) error {
 		// This is a large batch which was already added to the immutable queue.
 		return nil
 	}
+	applyStart := time.Now()
 	err := mem.apply(b, b.SeqNum())
+	b.commitStats.MemTableApplyDuration += time.Since(applyStart)
 	if err != nil {
 		return err
 	}
@@ -925,14 +927,19 @@ func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*mem
 		b.flushable.setSeqNum(b.SeqNum())
 		if !d.opts.DisableWAL {
 			var err error
+			walWriteStart := time.Now()
 			size, err = d.mu.log.SyncRecord(repr, syncWG, syncErr)
+			b.commitStats.WALWriteDuration += time.Since(walWriteStart)
 			if err != nil {
 				panic(err)
 			}
 		}
 	}
 
+	dbMuWaitStart := time.Now()
 	d.mu.Lock()
+	b.commitStats.DBMutexWaitDuration += time.Since(dbMuWaitStart)
+	dbMuHeldStart := time.Now()
 
 	var err error
 	if !b.ingestedSSTBatch {
@@ -953,6 +960,7 @@ func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*mem
 	// we unreference it. This reference is dropped in DB.commitApply().
 	mem := d.mu.mem.mutable
 
+	b.commitStats.DBMutexHoldDuration += time.Since(dbMuHeldStart)
 	d.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -963,7 +971,9 @@ func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*mem
 	}
 
 	if b.flushable == nil {
+		walWriteStart := time.Now()
 		size, err = d.mu.log.SyncRecord(repr, syncWG, syncErr)
+		b.commitStats.WALWriteDuration += time.Since(walWriteStart)
 		if err != nil {
 			panic(err)
 		}

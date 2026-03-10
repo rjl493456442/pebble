@@ -622,6 +622,12 @@ type Metrics struct {
 	Hits int64
 	// The number of cache misses.
 	Misses int64
+	// The number of bytes reserved out of the cache capacity.
+	ReservedSize int64
+	// The effective target size after reservations are applied.
+	TargetSize int64
+	// The configured maximum size of the cache.
+	MaxSize int64
 }
 
 // Cache implements Pebble's sharded block cache. The Clock-PRO algorithm is
@@ -889,12 +895,14 @@ func (c *Cache) Reserve(n int) func() {
 
 // Metrics returns the metrics for the cache.
 func (c *Cache) Metrics() Metrics {
-	var m Metrics
+	m := Metrics{MaxSize: c.maxSize}
 	for i := range c.shards {
 		s := &c.shards[i]
 		s.mu.RLock()
 		m.Count += int64(s.blocks.Count())
 		m.Size += s.sizeHot + s.sizeCold
+		m.ReservedSize += s.reservedSize
+		m.TargetSize += s.targetSize()
 		s.mu.RUnlock()
 		m.Hits += s.hits.Load()
 		m.Misses += s.misses.Load()

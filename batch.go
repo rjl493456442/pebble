@@ -335,6 +335,15 @@ type BatchCommitStats struct {
 	// SemaphoreWaitDuration is the wait time for semaphores in
 	// commitPipeline.Commit.
 	SemaphoreWaitDuration time.Duration
+	// CommitPipelineMutexWaitDuration is the wait time to acquire
+	// commitPipeline.mu.
+	CommitPipelineMutexWaitDuration time.Duration
+	// DBMutexWaitDuration is the wait time to acquire DB.mu during commitWrite.
+	DBMutexWaitDuration time.Duration
+	// DBMutexHoldDuration is the time spent with DB.mu held during commitWrite.
+	// This includes MemTableWriteStallDuration, L0ReadAmpWriteStallDuration and
+	// WALRotationDuration.
+	DBMutexHoldDuration time.Duration
 	// WALQueueWaitDuration is the wait time for allocating memory blocks in the
 	// LogWriter (due to the LogWriter not writing fast enough). At the moment
 	// this is duration is always zero because a single WAL will allow
@@ -342,6 +351,9 @@ type BatchCommitStats struct {
 	// we may pipeline WALs and bound the WAL queued blocks separately, so this
 	// field is preserved for that possibility.
 	WALQueueWaitDuration time.Duration
+	// WALWriteDuration is the time spent writing the batch to the WAL,
+	// excluding WAL rotation and sync wait.
+	WALWriteDuration time.Duration
 	// MemTableWriteStallDuration is the wait caused by a write stall due to too
 	// many memtables (due to not flushing fast enough).
 	MemTableWriteStallDuration time.Duration
@@ -352,6 +364,9 @@ type BatchCommitStats struct {
 	// WALRotationDuration is the wait time for WAL rotation, which includes
 	// syncing and closing the old WAL and creating (or reusing) a new one.
 	WALRotationDuration time.Duration
+	// MemTableApplyDuration is the time spent applying the batch to the
+	// memtable.
+	MemTableApplyDuration time.Duration
 	// CommitWaitDuration is the wait for publishing the seqnum plus the
 	// duration for the WAL sync (if requested). The former should be tiny and
 	// one can assume that this is all due to the WAL sync.

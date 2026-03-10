@@ -450,7 +450,9 @@ func (p *commitPipeline) prepare(b *Batch, syncWAL bool, noSyncWait bool) (*memT
 		b.commit.Add(2)
 	}
 
+	pMuWaitStart := time.Now()
 	p.mu.Lock()
+	b.commitStats.CommitPipelineMutexWaitDuration += time.Since(pMuWaitStart)
 
 	// Enqueue the batch in the pending queue. Note that while the pending queue
 	// is lock-free, we want the order of batches to be the same as the sequence
