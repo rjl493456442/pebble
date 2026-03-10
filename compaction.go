@@ -2100,13 +2100,28 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 	// anyway, we create the VersionEdit for ingestedFlushable outside of
 	// runCompaction. For all other flush cases, we construct the VersionEdit
 	// inside runCompaction.
-	d.logSlowFlushStepLocked(jobID, "run-compaction-begin", inputBytes)
 	runCompactionStart := d.timeNow()
-	// Start a background goroutine to periodically log flush progress while
-	// runCompaction is in progress (where d.mu is unlocked and I/O happens).
+	// Start a background goroutine that only begins logging after the slow
+	// flush threshold has elapsed, to avoid noise on normal flushes.
 	flushProgressDone := make(chan struct{})
 	if enabled, threshold := slowFlushDiagnosticsConfig(); enabled {
 		go func() {
+			// Wait for the threshold before emitting any log.
+			timer := time.NewTimer(threshold)
+			defer timer.Stop()
+			select {
+			case <-flushProgressDone:
+				return
+			case <-timer.C:
+			}
+			d.opts.Logger.Infof(
+				"slow flush in-progress | job=%d step=run-compaction elapsed=%s "+
+					"bytes-iterated=%s input-bytes=%s",
+				jobID, time.Since(runCompactionStart),
+				bytesForWriteStallDiagnostics(c.bytesIterated),
+				bytesForWriteStallDiagnostics(inputBytes),
+			)
+			// After the first log, log periodically.
 			ticker := time.NewTicker(threshold)
 			defer ticker.Stop()
 			for {
@@ -2114,13 +2129,11 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 				case <-flushProgressDone:
 					return
 				case <-ticker.C:
-					elapsed := time.Since(runCompactionStart)
-					bytesIterated := c.bytesIterated
 					d.opts.Logger.Infof(
 						"slow flush in-progress | job=%d step=run-compaction elapsed=%s "+
 							"bytes-iterated=%s input-bytes=%s",
-						jobID, elapsed,
-						bytesForWriteStallDiagnostics(bytesIterated),
+						jobID, time.Since(runCompactionStart),
+						bytesForWriteStallDiagnostics(c.bytesIterated),
 						bytesForWriteStallDiagnostics(inputBytes),
 					)
 				}
@@ -2135,12 +2148,10 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 
 	// Acquire logLock. This will be released either on an error, by way of
 	// logUnlock, or through a call to logAndApply if there is no error.
-	d.logSlowFlushStepLocked(jobID, "log-lock-begin", inputBytes)
 	logLockStart := d.timeNow()
 	d.mu.versions.logLock()
 	flushTiming.logLockWait = d.timeNow().Sub(logLockStart)
 
-	d.logSlowFlushStepLocked(jobID, "ingest-flush-begin", inputBytes)
 	ingestFlushStart := d.timeNow()
 	if c.kind == compactionKindIngestedFlushable {
 		ve, err = d.runIngestFlush(c)
@@ -2206,7 +2217,6 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 				}
 			}
 		}
-		d.logSlowFlushStepLocked(jobID, "log-and-apply-begin", inputBytes)
 		logAndApplyStart := d.timeNow()
 		err = d.mu.versions.logAndApply(jobID, ve, c.metrics, false, /* forceRotation */
 			func() []compactionInfo { return d.getInProgressCompactionInfoLocked(c) })
@@ -2245,7 +2255,6 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 		d.maybeUpdateDeleteCompactionHints(c)
 	}
 
-	d.logSlowFlushStepLocked(jobID, "clear-state-begin", inputBytes)
 	clearStateStart := d.timeNow()
 	d.clearCompactingState(c, err != nil)
 	delete(d.mu.compact.inProgress, c)
@@ -2259,7 +2268,6 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 		d.mu.mem.queue = d.mu.mem.queue[n:]
 		flushTiming.updateMemQueue = d.timeNow().Sub(updateMemQueueStart)
 
-		d.logSlowFlushStepLocked(jobID, "update-read-state-begin", inputBytes)
 		updateReadStateStart := d.timeNow()
 		d.updateReadStateLocked(d.opts.DebugCheck)
 		d.updateTableStatsLocked(ve.NewFiles)
@@ -2320,7 +2328,6 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 	}
 	flushTiming.readerUnref = d.timeNow().Sub(readerUnrefStart)
 
-	d.logSlowFlushStepLocked(jobID, "delete-obsolete-begin", inputBytes)
 	deleteObsoleteStart := d.timeNow()
 	d.deleteObsoleteFiles(jobID)
 	flushTiming.deleteObsolete = d.timeNow().Sub(deleteObsoleteStart)

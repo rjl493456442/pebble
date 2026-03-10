@@ -140,33 +140,6 @@ type flushStepTiming struct {
 	markFlushed    time.Duration
 }
 
-func (d *DB) logSlowFlushStepLocked(jobID int, step string, inputBytes uint64) {
-	enabled, _ := slowFlushDiagnosticsConfig()
-	if !enabled {
-		return
-	}
-	d.opts.Logger.Infof(
-		"slow flush step | job=%d step=%s input-bytes=%s | %s",
-		jobID,
-		step,
-		bytesForWriteStallDiagnostics(inputBytes),
-		d.writeStallStateLocked(""),
-	)
-}
-
-func (d *DB) logSlowFlushStepUnlocked(jobID int, step string, inputBytes uint64) {
-	enabled, _ := slowFlushDiagnosticsConfig()
-	if !enabled {
-		return
-	}
-	d.opts.Logger.Infof(
-		"slow flush step | job=%d step=%s input-bytes=%s",
-		jobID,
-		step,
-		bytesForWriteStallDiagnostics(inputBytes),
-	)
-}
-
 func (d *DB) logSlowFlushBreakdownLocked(
 	jobID int, inputs int, inputBytes uint64, ingest bool, totalDuration time.Duration,
 	timing flushStepTiming, err error,
