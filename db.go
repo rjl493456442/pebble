@@ -300,6 +300,8 @@ type DB struct {
 
 	commit *commitPipeline
 
+	readDiagnostics *readDiagnostics
+
 	// readState provides access to the state needed for reading without needing
 	// to acquire DB.mu.
 	readState struct {
@@ -535,6 +537,11 @@ var getIterAllocPool = sync.Pool{
 func (d *DB) getInternal(key []byte, b *Batch, s *Snapshot) ([]byte, io.Closer, error) {
 	if err := d.closed.Load(); err != nil {
 		panic(err)
+	}
+	readStart := time.Time{}
+	if d.readDiagnostics != nil {
+		readStart = time.Now()
+		defer d.maybeRecordRead(readOpGet, time.Since(readStart))
 	}
 
 	// Grab and reference the current readState. This prevents the underlying
@@ -1056,6 +1063,13 @@ func (d *DB) newIter(
 ) *Iterator {
 	if err := d.closed.Load(); err != nil {
 		panic(err)
+	}
+	readStart := time.Time{}
+	if d.readDiagnostics != nil {
+		readStart = time.Now()
+		defer func() {
+			d.maybeRecordRead(readOpIterOpen, time.Since(readStart))
+		}()
 	}
 	seqNum := sOpts.seqNum
 	if o.rangeKeys() {
@@ -2049,6 +2063,9 @@ func (d *DB) Metrics() *Metrics {
 	metrics.TableIters = int64(d.tableCache.iterCount())
 
 	metrics.SecondaryCacheMetrics = d.objProvider.Metrics()
+	if d.readDiagnostics != nil {
+		d.readDiagnostics.populateMetrics(metrics)
+	}
 
 	metrics.Uptime = d.timeNow().Sub(d.openedAt)
 

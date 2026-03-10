@@ -1225,6 +1225,10 @@ func (i *Iterator) SeekGE(key []byte) bool {
 // guarantees it will surface any range keys with bounds overlapping the
 // keyspace [key, limit).
 func (i *Iterator) SeekGEWithLimit(key []byte, limit []byte) IterValidityState {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	if i.rangeKey != nil {
 		// NB: Check Valid() before clearing requiresReposition.
 		i.rangeKey.prevPosHadRangeKey = i.rangeKey.hasRangeKey && i.Valid()
@@ -1389,6 +1393,10 @@ func (i *Iterator) SeekGEWithLimit(key []byte, limit []byte) IterValidityState {
 // ImmediateSuccessor method. For example, a SeekPrefixGE("a@9") call with the
 // prefix "a" will truncate range key bounds to [a,ImmediateSuccessor(a)].
 func (i *Iterator) SeekPrefixGE(key []byte) bool {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	if i.rangeKey != nil {
 		// NB: Check Valid() before clearing requiresReposition.
 		i.rangeKey.prevPosHadRangeKey = i.rangeKey.hasRangeKey && i.Valid()
@@ -1519,6 +1527,10 @@ func (i *Iterator) SeekLT(key []byte) bool {
 // guarantees it will surface any range keys with bounds overlapping the
 // keyspace up to limit.
 func (i *Iterator) SeekLTWithLimit(key []byte, limit []byte) IterValidityState {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	if i.rangeKey != nil {
 		// NB: Check Valid() before clearing requiresReposition.
 		i.rangeKey.prevPosHadRangeKey = i.rangeKey.hasRangeKey && i.Valid()
@@ -1596,6 +1608,10 @@ func (i *Iterator) SeekLTWithLimit(key []byte, limit []byte) IterValidityState {
 // First moves the iterator the the first key/value pair. Returns true if the
 // iterator is pointing at a valid entry and false otherwise.
 func (i *Iterator) First() bool {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	if i.rangeKey != nil {
 		// NB: Check Valid() before clearing requiresReposition.
 		i.rangeKey.prevPosHadRangeKey = i.rangeKey.hasRangeKey && i.Valid()
@@ -1628,6 +1644,10 @@ func (i *Iterator) First() bool {
 // Last moves the iterator the the last key/value pair. Returns true if the
 // iterator is pointing at a valid entry and false otherwise.
 func (i *Iterator) Last() bool {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	if i.rangeKey != nil {
 		// NB: Check Valid() before clearing requiresReposition.
 		i.rangeKey.prevPosHadRangeKey = i.rangeKey.hasRangeKey && i.Valid()
@@ -1705,6 +1725,10 @@ func (i *Iterator) NextPrefix() bool {
 }
 
 func (i *Iterator) nextPrefix() IterValidityState {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	if i.rangeKey != nil {
 		// NB: Check Valid() before clearing requiresReposition.
 		i.rangeKey.prevPosHadRangeKey = i.rangeKey.hasRangeKey && i.Valid()
@@ -1830,6 +1854,10 @@ func (i *Iterator) internalNextPrefix(currKeyPrefixLen int) {
 }
 
 func (i *Iterator) nextWithLimit(limit []byte) IterValidityState {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	i.stats.ForwardStepCount[InterfaceCall]++
 	if i.hasPrefix {
 		if limit != nil {
@@ -1933,6 +1961,10 @@ func (i *Iterator) Prev() bool {
 // guarantees it will surface any range keys with bounds overlapping the
 // keyspace up to limit.
 func (i *Iterator) PrevWithLimit(limit []byte) IterValidityState {
+	db, readStart := i.startReadOperation(readOpIterStep)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterStep, readStart)
+	}
 	i.stats.ReverseStepCount[InterfaceCall]++
 	if i.err != nil {
 		return i.iterValidityState
@@ -2197,6 +2229,10 @@ func (i *Iterator) Value() []byte {
 // The caller should not modify the contents of the returned slice, and its
 // contents may change on the next call to Next.
 func (i *Iterator) ValueAndErr() ([]byte, error) {
+	db, readStart := i.startReadOperation(readOpIterValue)
+	if db != nil {
+		defer finishReadOperation(db, readOpIterValue, readStart)
+	}
 	val, callerOwned, err := i.value.Value(i.lazyValueBuf)
 	if err != nil {
 		i.err = err

@@ -547,6 +547,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 
 	d.maybeScheduleFlush()
 	d.maybeScheduleCompaction()
+	d.maybeInitReadDiagnostics()
 
 	// Note: this is a no-op if invariants are disabled or race is enabled.
 	//

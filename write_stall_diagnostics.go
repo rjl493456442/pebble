@@ -255,7 +255,13 @@ func (d *DB) logWriteStallBeginLocked(stallID uint64, reason string) {
 		return
 	}
 	writeStallDiagnosticActive.Store(true)
-	d.opts.Logger.Infof("write stall begin | id=%d reason=%s | %s", stallID, reason, d.writeStallStateLocked(reason))
+	d.opts.Logger.Infof(
+		"write stall begin | id=%d reason=%s | %s | %s",
+		stallID,
+		reason,
+		d.writeStallStateLocked(reason),
+		d.formatReadDiagnosticsForEvent(),
+	)
 }
 
 func (d *DB) logWriteStallReasonChangeLocked(
@@ -265,13 +271,14 @@ func (d *DB) logWriteStallReasonChangeLocked(
 		return
 	}
 	d.opts.Logger.Infof(
-		"write stall reason-change | id=%d total=%s wakeups=%d from=%s to=%s | %s",
+		"write stall reason-change | id=%d total=%s wakeups=%d from=%s to=%s | %s | %s",
 		stallID,
 		totalDuration,
 		wakeups,
 		prevReason,
 		newReason,
 		d.writeStallStateLocked(newReason),
+		d.formatReadDiagnosticsForEvent(),
 	)
 }
 
@@ -282,13 +289,14 @@ func (d *DB) logWriteStallWakeLocked(
 		return
 	}
 	d.opts.Logger.Infof(
-		"write stall wake | id=%d wait=%s total=%s wakeups=%d reason=%s | %s",
+		"write stall wake | id=%d wait=%s total=%s wakeups=%d reason=%s | %s | %s",
 		stallID,
 		waitDuration,
 		totalDuration,
 		wakeups,
 		reason,
 		d.writeStallStateLocked(reason),
+		d.formatReadDiagnosticsForEvent(),
 	)
 }
 
@@ -299,11 +307,12 @@ func (d *DB) logWriteStallEndLocked(
 		return
 	}
 	d.opts.Logger.Infof(
-		"write stall end | id=%d total=%s wakeups=%d | %s",
+		"write stall end | id=%d total=%s wakeups=%d | %s | %s",
 		stallID,
 		totalDuration,
 		wakeups,
 		d.writeStallStateLocked(reason),
+		d.formatReadDiagnosticsForEvent(),
 	)
 	writeStallDiagnosticActive.Store(false)
 }
@@ -497,7 +506,7 @@ func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phas
 	d.mu.Unlock()
 
 	d.opts.Logger.Infof(
-		"slow write | phase=%s total=%s threshold=%s sync=%t no-sync-wait=%t | batch={count=%d repr=%s memtable-est=%s flushable=%t} | stats={semaphore=%s commit-pipeline-lock=%s db-lock=%s db-work=%s wal-queue=%s wal-write=%s memtable-stall=%s l0-stall=%s wal-rotation=%s memtable-apply=%s commit-wait=%s other=%s} | %s | %s | %s | cache={block=%s/%s reserved=%s target=%s free-target=%s hit-rate=%.1f%% table-hit-rate=%.1f%% filter-utility=%.1f%% memtable-reserved=%s} | %s",
+		"slow write | phase=%s total=%s threshold=%s sync=%t no-sync-wait=%t | batch={count=%d repr=%s memtable-est=%s flushable=%t} | stats={semaphore=%s commit-pipeline-lock=%s db-lock=%s db-work=%s wal-queue=%s wal-write=%s memtable-stall=%s l0-stall=%s wal-rotation=%s memtable-apply=%s commit-wait=%s other=%s} | %s | %s | %s | cache={block=%s/%s reserved=%s target=%s free-target=%s hit-rate=%.1f%% table-hit-rate=%.1f%% filter-utility=%.1f%% memtable-reserved=%s} | %s | %s",
 		phase,
 		stats.TotalDuration,
 		threshold,
@@ -532,5 +541,6 @@ func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phas
 		hitRate(filterMetrics.Hits, filterMetrics.Misses),
 		signedBytesForWriteStallDiagnostics(memTableReserved),
 		state,
+		d.formatReadDiagnosticsForEvent(),
 	)
 }

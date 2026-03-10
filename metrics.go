@@ -222,6 +222,19 @@ type Metrics struct {
 		ZombieCount int64
 	}
 
+	Read struct {
+		Count          uint64
+		GetCount       uint64
+		IterOpenCount  uint64
+		IterStepCount  uint64
+		IterValueCount uint64
+		TotalDuration  time.Duration
+		MaxDuration    time.Duration
+		Slow1msCount   uint64
+		Slow10msCount  uint64
+		Slow100msCount uint64
+	}
+
 	Keys struct {
 		// The approximate count of internal range key set keys in the database.
 		RangeKeySetsCount uint64
@@ -591,6 +604,21 @@ func (m *Metrics) SafeFormat(w redact.SafePrinter, _ rune) {
 		redact.Safe(m.Snapshots.Count),
 		redact.Safe(m.Snapshots.EarliestSeqNum))
 
+	readAvg := time.Duration(0)
+	if m.Read.Count > 0 {
+		readAvg = time.Duration(int64(m.Read.TotalDuration) / int64(m.Read.Count))
+	}
+	w.Printf("Reads: %s ops (get=%s open=%s step=%s value=%s) avg=%s max=%s slow: >1ms=%s >10ms=%s >100ms=%s\n",
+		humanize.Count.Uint64(m.Read.Count),
+		humanize.Count.Uint64(m.Read.GetCount),
+		humanize.Count.Uint64(m.Read.IterOpenCount),
+		humanize.Count.Uint64(m.Read.IterStepCount),
+		humanize.Count.Uint64(m.Read.IterValueCount),
+		redact.Safe(readAvg),
+		redact.Safe(m.Read.MaxDuration),
+		humanize.Count.Uint64(m.Read.Slow1msCount),
+		humanize.Count.Uint64(m.Read.Slow10msCount),
+		humanize.Count.Uint64(m.Read.Slow100msCount))
 	w.Printf("Table iters: %d\n", redact.Safe(m.TableIters))
 	w.Printf("Filter utility: %.1f%%\n", redact.Safe(hitRate(m.Filter.Hits, m.Filter.Misses)))
 	w.Printf("Ingestions: %d  as flushable: %d (%s in %d tables)\n",
