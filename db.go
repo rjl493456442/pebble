@@ -913,6 +913,7 @@ func (d *DB) commitApply(b *Batch, mem *memTable) error {
 func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*memTable, error) {
 	var size int64
 	repr := b.Repr()
+	collectDetailedStats := b != nil && detailedCommitBreakdownEnabled()
 
 	if b.flushable != nil {
 		// We have a large batch. Such batches are special in that they don't get
@@ -927,8 +928,21 @@ func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*mem
 		b.flushable.setSeqNum(b.SeqNum())
 		if !d.opts.DisableWAL {
 			var err error
+			var walWriteStats record.SyncRecordStats
+			if collectDetailedStats {
+				b.commitStats.WALWriteBreakdown.LogSizeBefore = uint64(d.mu.log.Size())
+			}
 			walWriteStart := time.Now()
-			size, err = d.mu.log.SyncRecord(repr, syncWG, syncErr)
+			if collectDetailedStats {
+				size, err = d.mu.log.SyncRecordWithStats(repr, syncWG, syncErr, &walWriteStats)
+				b.commitStats.WALWriteBreakdown.EmitFragmentDuration += walWriteStats.EmitFragmentDuration
+				b.commitStats.WALWriteBreakdown.QueueBlockDuration += walWriteStats.QueueBlockDuration
+				b.commitStats.WALWriteBreakdown.FragmentCount += walWriteStats.FragmentCount
+				b.commitStats.WALWriteBreakdown.QueuedBlockCount += walWriteStats.QueuedBlockCount
+				b.commitStats.WALWriteBreakdown.LogSizeAfter = uint64(size)
+			} else {
+				size, err = d.mu.log.SyncRecord(repr, syncWG, syncErr)
+			}
 			b.commitStats.WALWriteDuration += time.Since(walWriteStart)
 			if err != nil {
 				panic(err)
@@ -951,7 +965,14 @@ func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*mem
 	}
 
 	if err == nil && !d.opts.DisableWAL {
+		logBytesAccountingStart := time.Time{}
+		if collectDetailedStats {
+			logBytesAccountingStart = time.Now()
+		}
 		d.mu.log.bytesIn += uint64(len(repr))
+		if collectDetailedStats {
+			b.commitStats.DBWorkBreakdown.LogBytesAccountingDuration += time.Since(logBytesAccountingStart)
+		}
 	}
 
 	// Grab a reference to the memtable while holding DB.mu. Note that for
@@ -971,8 +992,21 @@ func (d *DB) commitWrite(b *Batch, syncWG *sync.WaitGroup, syncErr *error) (*mem
 	}
 
 	if b.flushable == nil {
+		var walWriteStats record.SyncRecordStats
+		if collectDetailedStats {
+			b.commitStats.WALWriteBreakdown.LogSizeBefore = uint64(d.mu.log.Size())
+		}
 		walWriteStart := time.Now()
-		size, err = d.mu.log.SyncRecord(repr, syncWG, syncErr)
+		if collectDetailedStats {
+			size, err = d.mu.log.SyncRecordWithStats(repr, syncWG, syncErr, &walWriteStats)
+			b.commitStats.WALWriteBreakdown.EmitFragmentDuration += walWriteStats.EmitFragmentDuration
+			b.commitStats.WALWriteBreakdown.QueueBlockDuration += walWriteStats.QueueBlockDuration
+			b.commitStats.WALWriteBreakdown.FragmentCount += walWriteStats.FragmentCount
+			b.commitStats.WALWriteBreakdown.QueuedBlockCount += walWriteStats.QueuedBlockCount
+			b.commitStats.WALWriteBreakdown.LogSizeAfter = uint64(size)
+		} else {
+			size, err = d.mu.log.SyncRecord(repr, syncWG, syncErr)
+		}
 		b.commitStats.WALWriteDuration += time.Since(walWriteStart)
 		if err != nil {
 			panic(err)
@@ -2326,6 +2360,16 @@ func (d *DB) walPreallocateSize() int {
 }
 
 func (d *DB) newMemTable(logNum FileNum, logSeqNum uint64) (*memTable, *flushableEntry) {
+	return d.newMemTableWithStats(logNum, logSeqNum, nil)
+}
+
+func (d *DB) newMemTableWithStats(
+	logNum FileNum, logSeqNum uint64, stats *BatchCommitDBWorkBreakdown,
+) (*memTable, *flushableEntry) {
+	totalStart := time.Time{}
+	if stats != nil {
+		totalStart = time.Now()
+	}
 	size := d.mu.mem.nextSize
 	if d.mu.mem.nextSize < d.opts.MemTableSize {
 		d.mu.mem.nextSize *= 2
@@ -2354,20 +2398,44 @@ func (d *DB) newMemTable(logNum FileNum, logSeqNum uint64) (*memTable, *flushabl
 		mem = nil
 	}
 	if mem != nil {
+		if stats != nil {
+			stats.NewMemTableReused = true
+		}
 		// Carry through the existing buffer and memory reservation.
 		memtblOpts.arenaBuf = mem.arenaBuf
 		memtblOpts.releaseAccountingReservation = mem.releaseAccountingReservation
 	} else {
 		mem = new(memTable)
+		arenaAllocStart := time.Time{}
+		if stats != nil {
+			arenaAllocStart = time.Now()
+		}
 		memtblOpts.arenaBuf = manual.New(int(size))
+		if stats != nil {
+			stats.NewMemTableArenaAllocDuration += time.Since(arenaAllocStart)
+		}
+		cacheReserveStart := time.Time{}
+		if stats != nil {
+			cacheReserveStart = time.Now()
+		}
 		memtblOpts.releaseAccountingReservation = d.opts.Cache.Reserve(int(size))
+		if stats != nil {
+			stats.NewMemTableCacheReserveDuration += time.Since(cacheReserveStart)
+		}
 		d.memTableCount.Add(1)
 		d.memTableReserved.Add(int64(size))
 
 		// Note: this is a no-op if invariants are disabled or race is enabled.
 		invariants.SetFinalizer(mem, checkMemTable)
 	}
+	initStart := time.Time{}
+	if stats != nil {
+		initStart = time.Now()
+	}
 	mem.init(memtblOpts)
+	if stats != nil {
+		stats.NewMemTableInitDuration += time.Since(initStart)
+	}
 
 	entry := d.newFlushableEntry(mem, logNum, logSeqNum)
 	entry.releaseMemAccounting = func() {
@@ -2386,6 +2454,9 @@ func (d *DB) newMemTable(logNum FileNum, logSeqNum uint64) (*memTable, *flushabl
 			// responsible for freeing it.
 			d.freeMemTable(unusedMem)
 		}
+	}
+	if stats != nil {
+		stats.NewMemTableDuration += time.Since(totalStart)
 	}
 	return mem, entry
 }
@@ -2424,6 +2495,12 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 	}
 
 	force := b == nil || b.flushable != nil
+	var dbWorkStats *BatchCommitDBWorkBreakdown
+	var walRotationStats *BatchCommitWALRotationBreakdown
+	if b != nil && detailedCommitBreakdownEnabled() {
+		dbWorkStats = &b.commitStats.DBWorkBreakdown
+		walRotationStats = &b.commitStats.WALRotationBreakdown
+	}
 	stalled := false
 	var stallID uint64
 	var stallReason string
@@ -2432,7 +2509,16 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 	var nextStallDiagnosticTime time.Time
 	for {
 		if b != nil && b.flushable == nil {
+			prepareStart := time.Time{}
+			if dbWorkStats != nil {
+				prepareStart = time.Now()
+			}
 			err := d.mu.mem.mutable.prepare(b)
+			if dbWorkStats != nil {
+				prepareDuration := time.Since(prepareStart)
+				dbWorkStats.MutablePrepareDuration += prepareDuration
+				dbWorkStats.MakeRoomForWriteDuration += prepareDuration
+			}
 			if err != arenaskl.ErrArenaFull {
 				if stalled {
 					d.opts.EventListener.WriteStallEnd()
@@ -2449,9 +2535,18 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		}
 		// force || err == ErrArenaFull, so we need to rotate the current memtable.
 		{
+			queueScanStart := time.Time{}
+			if dbWorkStats != nil {
+				queueScanStart = time.Now()
+			}
 			var size uint64
 			for i := range d.mu.mem.queue {
 				size += d.mu.mem.queue[i].totalBytes()
+			}
+			if dbWorkStats != nil {
+				queueScanDuration := time.Since(queueScanStart)
+				dbWorkStats.QueueScanDuration += queueScanDuration
+				dbWorkStats.MakeRoomForWriteDuration += queueScanDuration
 			}
 			if size >= uint64(d.opts.MemTableStopWritesThreshold)*d.opts.MemTableSize {
 				// We have filled up the current memtable, but already queued memtables
@@ -2529,12 +2624,16 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		var prevLogSize uint64
 		if !d.opts.DisableWAL {
 			now := time.Now()
-			newLogNum, prevLogSize = d.rotateWAL()
+			newLogNum, prevLogSize = d.rotateWAL(walRotationStats)
 			if b != nil {
 				b.commitStats.WALRotationDuration += time.Since(now)
 			}
 		}
 
+		postRotationStart := time.Time{}
+		if dbWorkStats != nil {
+			postRotationStart = time.Now()
+		}
 		immMem := d.mu.mem.mutable
 		imm := d.mu.mem.queue[len(d.mu.mem.queue)-1]
 		imm.logSize = prevLogSize
@@ -2560,11 +2659,25 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 			// See DB.commitWrite for the special handling of log writes for large
 			// batches. In particular, the large batch has already written to
 			// imm.logNum.
+			flushableEnqueueStart := time.Time{}
+			if dbWorkStats != nil {
+				flushableEnqueueStart = time.Now()
+			}
 			entry := d.newFlushableEntry(b.flushable, imm.logNum, b.SeqNum())
 			// The large batch is by definition large. Reserve space from the cache
 			// for it until it is flushed.
+			flushableReserveStart := time.Time{}
+			if dbWorkStats != nil {
+				flushableReserveStart = time.Now()
+			}
 			entry.releaseMemAccounting = d.opts.Cache.Reserve(int(b.flushable.totalBytes()))
+			if dbWorkStats != nil {
+				dbWorkStats.FlushableBatchCacheReserveDuration += time.Since(flushableReserveStart)
+			}
 			d.mu.mem.queue = append(d.mu.mem.queue, entry)
+			if dbWorkStats != nil {
+				dbWorkStats.FlushableBatchEnqueueDuration += time.Since(flushableEnqueueStart)
+			}
 		}
 
 		var logSeqNum uint64
@@ -2576,13 +2689,22 @@ func (d *DB) makeRoomForWrite(b *Batch) error {
 		} else {
 			logSeqNum = d.mu.versions.logSeqNum.Load()
 		}
-		d.rotateMemtable(newLogNum, logSeqNum, immMem)
+		d.rotateMemtable(newLogNum, logSeqNum, immMem, dbWorkStats)
+		if dbWorkStats != nil {
+			dbWorkStats.MakeRoomForWriteDuration += time.Since(postRotationStart)
+		}
 		force = false
 	}
 }
 
 // Both DB.mu and commitPipeline.mu must be held by the caller.
-func (d *DB) rotateMemtable(newLogNum FileNum, logSeqNum uint64, prev *memTable) {
+func (d *DB) rotateMemtable(
+	newLogNum FileNum, logSeqNum uint64, prev *memTable, stats *BatchCommitDBWorkBreakdown,
+) {
+	totalStart := time.Time{}
+	if stats != nil {
+		totalStart = time.Now()
+	}
 	// Create a new memtable, scheduling the previous one for flushing. We do
 	// this even if the previous memtable was empty because the DB.Flush
 	// mechanism is dependent on being able to wait for the empty memtable to
@@ -2599,7 +2721,7 @@ func (d *DB) rotateMemtable(newLogNum FileNum, logSeqNum uint64, prev *memTable)
 	//
 	// NB: prev should be the current mutable memtable.
 	var entry *flushableEntry
-	d.mu.mem.mutable, entry = d.newMemTable(newLogNum, logSeqNum)
+	d.mu.mem.mutable, entry = d.newMemTableWithStats(newLogNum, logSeqNum, stats)
 	d.mu.mem.queue = append(d.mu.mem.queue, entry)
 	// d.logSize tracks the log size of the WAL file corresponding to the most
 	// recent flushable. The log size of the previous mutable memtable no longer
@@ -2611,9 +2733,19 @@ func (d *DB) rotateMemtable(newLogNum FileNum, logSeqNum uint64, prev *memTable)
 	// memtable has been appended; this would result in omitting the log size of
 	// the most recent flushable.
 	d.logSize.Store(0)
-	d.updateReadStateLocked(nil)
+	d.updateReadStateLockedWithStats(nil, stats)
 	if prev.writerUnref() {
+		maybeScheduleFlushStart := time.Time{}
+		if stats != nil {
+			maybeScheduleFlushStart = time.Now()
+		}
 		d.maybeScheduleFlush()
+		if stats != nil {
+			stats.MaybeScheduleFlushDuration += time.Since(maybeScheduleFlushStart)
+		}
+	}
+	if stats != nil {
+		stats.RotateMemtableDuration += time.Since(totalStart)
 	}
 }
 
@@ -2623,7 +2755,7 @@ func (d *DB) rotateMemtable(newLogNum FileNum, logSeqNum uint64, prev *memTable)
 //
 // Both DB.mu and commitPipeline.mu must be held by the caller. Note that DB.mu
 // may be released and reacquired.
-func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
+func (d *DB) rotateWAL(stats *BatchCommitWALRotationBreakdown) (newLogNum FileNum, prevLogSize uint64) {
 	if d.opts.DisableWAL {
 		panic("pebble: invalid function call")
 	}
@@ -2633,6 +2765,9 @@ func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
 	newLogNum = d.mu.versions.getNextFileNum()
 
 	prevLogSize = uint64(d.mu.log.Size())
+	if stats != nil {
+		stats.PreviousLogSize = prevLogSize
+	}
 
 	// The previous log may have grown past its original physical
 	// size. Update its file size in the queue so we have a proper
@@ -2643,16 +2778,35 @@ func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
 	d.mu.Unlock()
 
 	var err error
+	var closeStats record.CloseStats
 	// Close the previous log first. This writes an EOF trailer
 	// signifying the end of the file and syncs it to disk. We must
 	// close the previous log before linking the new log file,
 	// otherwise a crash could leave both logs with unclean tails, and
 	// Open will treat the previous log as corrupt.
-	err = d.mu.log.LogWriter.Close()
+	closeStart := time.Time{}
+	if stats != nil {
+		closeStart = time.Now()
+		err = d.mu.log.LogWriter.CloseWithStats(&closeStats)
+		stats.CloseDuration += time.Since(closeStart)
+		stats.CloseEmitEOFTrailerDuration += closeStats.EmitEOFTrailerDuration
+		stats.CloseDrainDuration += closeStats.WaitForFlusherDuration
+		stats.CloseSyncDuration += closeStats.SyncDuration
+		stats.CloseFileDuration += closeStats.FileCloseDuration
+	} else {
+		err = d.mu.log.LogWriter.Close()
+	}
 	metrics := d.mu.log.LogWriter.Metrics()
+	metricsMergeStart := time.Time{}
+	if stats != nil {
+		metricsMergeStart = time.Now()
+	}
 	d.mu.Lock()
 	if err := d.mu.log.metrics.Merge(metrics); err != nil {
 		d.opts.Logger.Infof("metrics error: %s", err)
+	}
+	if stats != nil {
+		stats.MetricsMergeDuration += time.Since(metricsMergeStart)
 	}
 	d.mu.Unlock()
 
@@ -2668,13 +2822,35 @@ func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
 	var recycleOK bool
 	var newLogFile vfs.File
 	if err == nil {
+		recycleLookupStart := time.Time{}
+		if stats != nil {
+			recycleLookupStart = time.Now()
+		}
 		recycleLog, recycleOK = d.logRecycler.peek()
+		if stats != nil {
+			stats.RecycleLookupDuration += time.Since(recycleLookupStart)
+			stats.Recycled = recycleOK
+		}
 		if recycleOK {
 			recycleLogName := base.MakeFilepath(d.opts.FS, d.walDirname, fileTypeLog, recycleLog.fileNum)
+			reuseStart := time.Time{}
+			if stats != nil {
+				reuseStart = time.Now()
+			}
 			newLogFile, err = d.opts.FS.ReuseForWrite(recycleLogName, newLogName)
+			if stats != nil {
+				stats.ReuseDuration += time.Since(reuseStart)
+			}
 			base.MustExist(d.opts.FS, newLogName, d.opts.Logger, err)
 		} else {
+			createStart := time.Time{}
+			if stats != nil {
+				createStart = time.Now()
+			}
 			newLogFile, err = d.opts.FS.Create(newLogName)
+			if stats != nil {
+				stats.CreateDuration += time.Since(createStart)
+			}
 			base.MustExist(d.opts.FS, newLogName, d.opts.Logger, err)
 		}
 	}
@@ -2690,30 +2866,61 @@ func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
 		// reused would allow us to skip the stat and use
 		// recycleLog.fileSize.
 		var finfo os.FileInfo
+		statStart := time.Time{}
+		if stats != nil {
+			statStart = time.Now()
+		}
 		finfo, err = newLogFile.Stat()
+		if stats != nil {
+			stats.StatDuration += time.Since(statStart)
+		}
 		if err == nil {
 			newLogSize = uint64(finfo.Size())
+			if stats != nil {
+				stats.NewLogSize = newLogSize
+			}
 		}
 	}
 
 	if err == nil {
 		// TODO(peter): RocksDB delays sync of the parent directory until the
 		// first time the log is synced. Is that worthwhile?
+		dirSyncStart := time.Time{}
+		if stats != nil {
+			dirSyncStart = time.Now()
+		}
 		err = d.walDir.Sync()
+		if stats != nil {
+			stats.DirSyncDuration += time.Since(dirSyncStart)
+		}
 	}
 
 	if err != nil && newLogFile != nil {
 		newLogFile.Close()
 	} else if err == nil {
+		wrapStart := time.Time{}
+		if stats != nil {
+			wrapStart = time.Now()
+		}
 		newLogFile = vfs.NewSyncingFile(newLogFile, vfs.SyncingFileOptions{
 			NoSyncOnClose:   d.opts.NoSyncOnClose,
 			BytesPerSync:    d.opts.WALBytesPerSync,
 			PreallocateSize: d.walPreallocateSize(),
 		})
+		if stats != nil {
+			stats.WrapDuration += time.Since(wrapStart)
+		}
 	}
 
 	if recycleOK {
+		recyclerPopStart := time.Time{}
+		if stats != nil {
+			recyclerPopStart = time.Now()
+		}
 		err = firstError(err, d.logRecycler.pop(recycleLog.fileNum.FileNum()))
+		if stats != nil {
+			stats.RecyclerPopDuration += time.Since(recyclerPopStart)
+		}
 	}
 
 	d.opts.EventListener.WALCreated(WALCreateInfo{
@@ -2737,6 +2944,13 @@ func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
 		panic(err)
 	}
 
+	installStart := time.Time{}
+	if stats != nil {
+		installStart = time.Now()
+		if stats.NewLogSize == 0 {
+			stats.NewLogSize = newLogSize
+		}
+	}
 	d.mu.log.queue = append(d.mu.log.queue, fileInfo{fileNum: newLogNum.DiskFileNum(), fileSize: newLogSize})
 	d.mu.log.LogWriter = record.NewLogWriter(newLogFile, newLogNum, record.LogWriterConfig{
 		WALFsyncLatency:    d.mu.log.metrics.fsyncLatency,
@@ -2745,6 +2959,9 @@ func (d *DB) rotateWAL() (newLogNum FileNum, prevLogSize uint64) {
 	})
 	if d.mu.log.registerLogWriterForTesting != nil {
 		d.mu.log.registerLogWriterForTesting(d.mu.log.LogWriter)
+	}
+	if stats != nil {
+		stats.InstallDuration += time.Since(installStart)
 	}
 
 	return

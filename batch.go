@@ -312,6 +312,132 @@ type batchInternal struct {
 	committing bool
 }
 
+// BatchCommitDBWorkBreakdown exposes the breakdown of time spent while DB.mu is
+// held during commitWrite, excluding explicit write-stall waits and WAL
+// rotation.
+type BatchCommitDBWorkBreakdown struct {
+	// MakeRoomForWriteDuration is the time spent in makeRoomForWrite.
+	MakeRoomForWriteDuration time.Duration
+	// MutablePrepareDuration is the time spent reserving space in the mutable
+	// memtable while in makeRoomForWrite.
+	MutablePrepareDuration time.Duration
+	// QueueScanDuration is the time spent scanning the flushable queue while in
+	// makeRoomForWrite.
+	QueueScanDuration time.Duration
+	// RotateMemtableDuration is the time spent rotating the mutable memtable and
+	// installing the new mutable memtable.
+	RotateMemtableDuration time.Duration
+	// FlushableBatchEnqueueDuration is the time spent enqueueing a large batch as
+	// a flushable batch during memtable rotation.
+	FlushableBatchEnqueueDuration time.Duration
+	// FlushableBatchCacheReserveDuration is the time spent reserving cache for a
+	// flushable batch during memtable rotation.
+	FlushableBatchCacheReserveDuration time.Duration
+	// NewMemTableDuration is the time spent constructing the new mutable
+	// memtable.
+	NewMemTableDuration time.Duration
+	// NewMemTableArenaAllocDuration is the time spent allocating fresh arena
+	// backing memory for a new memtable when recycling could not be used.
+	NewMemTableArenaAllocDuration time.Duration
+	// NewMemTableCacheReserveDuration is the time spent reserving cache for the
+	// new memtable.
+	NewMemTableCacheReserveDuration time.Duration
+	// NewMemTableInitDuration is the time spent initializing the new memtable
+	// after its backing memory has been selected.
+	NewMemTableInitDuration time.Duration
+	// NewMemTableReused indicates whether the memtable rotation reused a stashed
+	// memtable allocation instead of allocating a fresh arena.
+	NewMemTableReused bool
+	// ReadStateDuration is the time spent updating the DB read state during
+	// memtable rotation.
+	ReadStateDuration time.Duration
+	// ReadStateLockWaitDuration is the subset of ReadStateDuration spent waiting
+	// to acquire d.readState's write lock.
+	ReadStateLockWaitDuration time.Duration
+	// ReadStateInstallDuration is the time spent swapping in the new read state
+	// once the lock has been acquired.
+	ReadStateInstallDuration time.Duration
+	// ReadStateOldUnrefDuration is the time spent releasing the previous read
+	// state while DB.mu is still held.
+	ReadStateOldUnrefDuration time.Duration
+	// MaybeScheduleFlushDuration is the time spent scheduling a flush after
+	// memtable rotation.
+	MaybeScheduleFlushDuration time.Duration
+	// LogBytesAccountingDuration is the time spent updating WAL byte accounting
+	// after makeRoomForWrite.
+	LogBytesAccountingDuration time.Duration
+}
+
+// BatchCommitWALWriteBreakdown exposes the breakdown of time spent in
+// record.LogWriter.SyncRecord.
+type BatchCommitWALWriteBreakdown struct {
+	// EmitFragmentDuration is the time spent fragmenting the batch into WAL
+	// blocks, including copying payload bytes and computing chunk checksums.
+	EmitFragmentDuration time.Duration
+	// QueueBlockDuration is the time spent queueing full WAL blocks to the
+	// background flusher during SyncRecord.
+	QueueBlockDuration time.Duration
+	// FragmentCount is the number of fragments emitted for the record.
+	FragmentCount int
+	// QueuedBlockCount is the number of full WAL blocks queued while emitting the
+	// record.
+	QueuedBlockCount int
+	// LogSizeBefore is the WAL logical size before writing the record.
+	LogSizeBefore uint64
+	// LogSizeAfter is the WAL logical size immediately after writing the record.
+	LogSizeAfter uint64
+}
+
+// BatchCommitWALRotationBreakdown exposes the breakdown of time spent rotating
+// the WAL during makeRoomForWrite.
+type BatchCommitWALRotationBreakdown struct {
+	// PreviousLogSize is the logical size of the WAL being rotated out.
+	PreviousLogSize uint64
+	// NewLogSize is the physical size of the WAL file selected for reuse, or 0
+	// if a fresh WAL file was created.
+	NewLogSize uint64
+	// Recycled indicates whether WAL rotation attempted to reuse an obsolete WAL
+	// file.
+	Recycled bool
+	// CloseDuration is the total time spent closing the previous WAL.
+	CloseDuration time.Duration
+	// CloseEmitEOFTrailerDuration is the time spent appending the recyclable EOF
+	// trailer before closing the previous WAL.
+	CloseEmitEOFTrailerDuration time.Duration
+	// CloseDrainDuration is the time spent waiting for the WAL flusher goroutine
+	// to drain and exit while closing the previous WAL.
+	CloseDrainDuration time.Duration
+	// CloseSyncDuration is the time spent syncing the previous WAL during close.
+	CloseSyncDuration time.Duration
+	// CloseFileDuration is the time spent closing the underlying file handle for
+	// the previous WAL.
+	CloseFileDuration time.Duration
+	// MetricsMergeDuration is the time spent merging LogWriter metrics from the
+	// retired WAL.
+	MetricsMergeDuration time.Duration
+	// RecycleLookupDuration is the time spent consulting the WAL recycler.
+	RecycleLookupDuration time.Duration
+	// ReuseDuration is the time spent reusing an obsolete WAL file.
+	ReuseDuration time.Duration
+	// CreateDuration is the time spent creating a fresh WAL file.
+	CreateDuration time.Duration
+	// StatDuration is the time spent stat'ing a reused WAL file to determine its
+	// physical size.
+	StatDuration time.Duration
+	// DirSyncDuration is the time spent syncing the WAL directory after creating
+	// or reusing the new WAL file.
+	DirSyncDuration time.Duration
+	// WrapDuration is the time spent wrapping the file with the syncing file
+	// helper used by the WAL.
+	WrapDuration time.Duration
+	// RecyclerPopDuration is the time spent removing the recycled WAL file from
+	// the recycler bookkeeping.
+	RecyclerPopDuration time.Duration
+	// InstallDuration is the time spent installing the new LogWriter and
+	// enqueueing the new WAL in DB state.
+	InstallDuration time.Duration
+}
+
 // BatchCommitStats exposes stats related to committing a batch.
 //
 // NB: there is no Pebble internal tracing (using LoggerAndTracer) of slow
@@ -354,6 +480,8 @@ type BatchCommitStats struct {
 	// WALWriteDuration is the time spent writing the batch to the WAL,
 	// excluding WAL rotation and sync wait.
 	WALWriteDuration time.Duration
+	// WALWriteBreakdown provides a finer-grained breakdown of WALWriteDuration.
+	WALWriteBreakdown BatchCommitWALWriteBreakdown
 	// MemTableWriteStallDuration is the wait caused by a write stall due to too
 	// many memtables (due to not flushing fast enough).
 	MemTableWriteStallDuration time.Duration
@@ -364,9 +492,16 @@ type BatchCommitStats struct {
 	// WALRotationDuration is the wait time for WAL rotation, which includes
 	// syncing and closing the old WAL and creating (or reusing) a new one.
 	WALRotationDuration time.Duration
+	// WALRotationBreakdown provides a finer-grained breakdown of
+	// WALRotationDuration.
+	WALRotationBreakdown BatchCommitWALRotationBreakdown
 	// MemTableApplyDuration is the time spent applying the batch to the
 	// memtable.
 	MemTableApplyDuration time.Duration
+	// DBWorkBreakdown provides a finer-grained breakdown of the time spent in
+	// commitWrite while DB.mu was held, excluding explicit stall waits and WAL
+	// rotation.
+	DBWorkBreakdown BatchCommitDBWorkBreakdown
 	// CommitWaitDuration is the wait for publishing the seqnum plus the
 	// duration for the WAL sync (if requested). The former should be tiny and
 	// one can assume that this is all due to the WAL sync.

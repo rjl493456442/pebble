@@ -310,6 +310,22 @@ type LogWriterConfig struct {
 	QueueSemChan chan struct{}
 }
 
+// SyncRecordStats exposes a breakdown of work done inside SyncRecord.
+type SyncRecordStats struct {
+	EmitFragmentDuration time.Duration
+	QueueBlockDuration   time.Duration
+	FragmentCount        int
+	QueuedBlockCount     int
+}
+
+// CloseStats exposes a breakdown of work done inside Close.
+type CloseStats struct {
+	EmitEOFTrailerDuration time.Duration
+	WaitForFlusherDuration time.Duration
+	SyncDuration           time.Duration
+	FileCloseDuration      time.Duration
+}
+
 // initialAllocatedBlocksCap is the initial capacity of the various slices
 // intended to hold LogWriter blocks. The LogWriter may allocate more blocks
 // than this threshold allows.
@@ -593,12 +609,22 @@ func (w *LogWriter) queueBlock() {
 // Close flushes and syncs any unwritten data and closes the writer.
 // Where required, external synchronisation is provided by commitPipeline.mu.
 func (w *LogWriter) Close() error {
+	return w.CloseWithStats(nil)
+}
+
+// CloseWithStats is like Close but accumulates a breakdown of the close path
+// into stats if non-nil.
+func (w *LogWriter) CloseWithStats(stats *CloseStats) error {
 	f := &w.flusher
 
 	// Emit an EOF trailer signifying the end of this log. This helps readers
 	// differentiate between a corrupted entry in the middle of a log from
 	// garbage at the tail from a recycled log file.
+	eofStart := time.Now()
 	w.emitEOFTrailer()
+	if stats != nil {
+		stats.EmitEOFTrailerDuration += time.Since(eofStart)
+	}
 
 	// Signal the flush loop to close.
 	f.Lock()
@@ -608,7 +634,11 @@ func (w *LogWriter) Close() error {
 
 	// Wait for the flush loop to close. The flush loop will not close until all
 	// pending data has been written or an error occurs.
+	waitStart := time.Now()
 	<-f.closed
+	if stats != nil {
+		stats.WaitForFlusherDuration += time.Since(waitStart)
+	}
 
 	// Sync any flushed data to disk. NB: flushLoop will sync after flushing the
 	// last buffered data only if it was requested via syncQ, so we need to sync
@@ -617,6 +647,9 @@ func (w *LogWriter) Close() error {
 	var syncLatency time.Duration
 	if err == nil && w.s != nil {
 		syncLatency, err = w.syncWithLatency()
+		if stats != nil {
+			stats.SyncDuration += syncLatency
+		}
 	}
 	f.Lock()
 	if f.fsyncLatency != nil {
@@ -626,7 +659,11 @@ func (w *LogWriter) Close() error {
 	f.Unlock()
 
 	if w.c != nil {
+		closeStart := time.Now()
 		cerr := w.c.Close()
+		if stats != nil {
+			stats.FileCloseDuration += time.Since(closeStart)
+		}
 		w.c = nil
 		if cerr != nil {
 			return cerr
@@ -659,6 +696,14 @@ func (w *LogWriter) WriteRecord(p []byte) (int64, error) {
 func (w *LogWriter) SyncRecord(
 	p []byte, wg *sync.WaitGroup, err *error,
 ) (logSize int64, err2 error) {
+	return w.SyncRecordWithStats(p, wg, err, nil)
+}
+
+// SyncRecordWithStats is like SyncRecord but accumulates a breakdown of the
+// work performed while writing the record into stats if non-nil.
+func (w *LogWriter) SyncRecordWithStats(
+	p []byte, wg *sync.WaitGroup, err *error, stats *SyncRecordStats,
+) (logSize int64, err2 error) {
 	if w.err != nil {
 		return -1, w.err
 	}
@@ -668,7 +713,7 @@ func (w *LogWriter) SyncRecord(
 	// MANIFEST is currently written using Writer, it is good to support the same
 	// semantics with LogWriter.
 	for i := 0; i == 0 || len(p) > 0; i++ {
-		p = w.emitFragment(i, p)
+		p = w.emitFragment(i, p, stats)
 	}
 
 	if wg != nil {
@@ -708,7 +753,8 @@ func (w *LogWriter) emitEOFTrailer() {
 	b.written.Store(i + int32(recyclableHeaderSize))
 }
 
-func (w *LogWriter) emitFragment(n int, p []byte) (remainingP []byte) {
+func (w *LogWriter) emitFragment(n int, p []byte, stats *SyncRecordStats) (remainingP []byte) {
+	start := time.Now()
 	b := w.block
 	i := b.written.Load()
 	first := n == 0
@@ -735,6 +781,10 @@ func (w *LogWriter) emitFragment(n int, p []byte) (remainingP []byte) {
 	binary.LittleEndian.PutUint32(b.buf[i+0:i+4], crc.New(b.buf[i+6:j]).Value())
 	binary.LittleEndian.PutUint16(b.buf[i+4:i+6], uint16(r))
 	b.written.Store(j)
+	if stats != nil {
+		stats.FragmentCount++
+		stats.EmitFragmentDuration += time.Since(start)
+	}
 
 	if blockSize-b.written.Load() < recyclableHeaderSize {
 		// There is no room for another fragment in the block, so fill the
@@ -742,7 +792,14 @@ func (w *LogWriter) emitFragment(n int, p []byte) (remainingP []byte) {
 		for i := b.written.Load(); i < blockSize; i++ {
 			b.buf[i] = 0
 		}
-		w.queueBlock()
+		if stats != nil {
+			queueBlockStart := time.Now()
+			w.queueBlock()
+			stats.QueueBlockDuration += time.Since(queueBlockStart)
+			stats.QueuedBlockCount++
+		} else {
+			w.queueBlock()
+		}
 	}
 	return p[r:]
 }

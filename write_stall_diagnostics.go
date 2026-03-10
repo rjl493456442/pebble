@@ -88,6 +88,11 @@ func slowWriteDiagnosticsConfig() (enabled bool, threshold time.Duration) {
 	return slowWriteDiagnosticsEnabledV, slowWriteDiagnosticThresholdV
 }
 
+func detailedCommitBreakdownEnabled() bool {
+	enabled, _ := slowWriteDiagnosticsConfig()
+	return enabled || writeStallDiagnosticsEnabled()
+}
+
 func flushableTypeLabel(f flushable) string {
 	switch f.(type) {
 	case *memTable:
@@ -325,6 +330,129 @@ func (d *DB) logFlushForWriteStallLocked(
 	)
 }
 
+func formatSlowWriteDBWorkBreakdown(stats BatchCommitStats, dbWorkDuration time.Duration) string {
+	breakdown := stats.DBWorkBreakdown
+	makeRoomResidual := breakdown.MakeRoomForWriteDuration -
+		breakdown.MutablePrepareDuration -
+		breakdown.QueueScanDuration -
+		breakdown.RotateMemtableDuration
+	if makeRoomResidual < 0 {
+		makeRoomResidual = 0
+	}
+	rotateResidual := breakdown.RotateMemtableDuration -
+		breakdown.FlushableBatchEnqueueDuration -
+		breakdown.NewMemTableDuration -
+		breakdown.ReadStateDuration -
+		breakdown.MaybeScheduleFlushDuration
+	if rotateResidual < 0 {
+		rotateResidual = 0
+	}
+	dbResidual := dbWorkDuration -
+		breakdown.MakeRoomForWriteDuration -
+		breakdown.LogBytesAccountingDuration
+	if dbResidual < 0 {
+		dbResidual = 0
+	}
+
+	return fmt.Sprintf(
+		"db-work-detail={total=%s make-room=%s prepare=%s queue-scan=%s make-room-residual=%s log-account=%s residual=%s} | rotate-mem={total=%s fbatch-enqueue=%s fbatch-reserve=%s new-mem=%s reused=%t alloc=%s reserve=%s init=%s read-state=%s lock-wait=%s install=%s old-unref=%s maybe-schedule-flush=%s residual=%s}",
+		dbWorkDuration,
+		breakdown.MakeRoomForWriteDuration,
+		breakdown.MutablePrepareDuration,
+		breakdown.QueueScanDuration,
+		makeRoomResidual,
+		breakdown.LogBytesAccountingDuration,
+		dbResidual,
+		breakdown.RotateMemtableDuration,
+		breakdown.FlushableBatchEnqueueDuration,
+		breakdown.FlushableBatchCacheReserveDuration,
+		breakdown.NewMemTableDuration,
+		breakdown.NewMemTableReused,
+		breakdown.NewMemTableArenaAllocDuration,
+		breakdown.NewMemTableCacheReserveDuration,
+		breakdown.NewMemTableInitDuration,
+		breakdown.ReadStateDuration,
+		breakdown.ReadStateLockWaitDuration,
+		breakdown.ReadStateInstallDuration,
+		breakdown.ReadStateOldUnrefDuration,
+		breakdown.MaybeScheduleFlushDuration,
+		rotateResidual,
+	)
+}
+
+func formatSlowWriteWALWriteBreakdown(stats BatchCommitStats) string {
+	breakdown := stats.WALWriteBreakdown
+	residual := stats.WALWriteDuration -
+		breakdown.EmitFragmentDuration -
+		breakdown.QueueBlockDuration
+	if residual < 0 {
+		residual = 0
+	}
+
+	return fmt.Sprintf(
+		"wal-write-detail={total=%s emit=%s queue-block=%s residual=%s frags=%d queued-blocks=%d log=%s->%s}",
+		stats.WALWriteDuration,
+		breakdown.EmitFragmentDuration,
+		breakdown.QueueBlockDuration,
+		residual,
+		breakdown.FragmentCount,
+		breakdown.QueuedBlockCount,
+		bytesForWriteStallDiagnostics(breakdown.LogSizeBefore),
+		bytesForWriteStallDiagnostics(breakdown.LogSizeAfter),
+	)
+}
+
+func formatSlowWriteWALRotationBreakdown(stats BatchCommitStats) string {
+	breakdown := stats.WALRotationBreakdown
+	closeResidual := breakdown.CloseDuration -
+		breakdown.CloseEmitEOFTrailerDuration -
+		breakdown.CloseDrainDuration -
+		breakdown.CloseSyncDuration -
+		breakdown.CloseFileDuration
+	if closeResidual < 0 {
+		closeResidual = 0
+	}
+	residual := stats.WALRotationDuration -
+		breakdown.CloseDuration -
+		breakdown.MetricsMergeDuration -
+		breakdown.RecycleLookupDuration -
+		breakdown.ReuseDuration -
+		breakdown.CreateDuration -
+		breakdown.StatDuration -
+		breakdown.DirSyncDuration -
+		breakdown.WrapDuration -
+		breakdown.RecyclerPopDuration -
+		breakdown.InstallDuration
+	if residual < 0 {
+		residual = 0
+	}
+
+	return fmt.Sprintf(
+		"wal-rotation-detail={total=%s close=%s merge-metrics=%s recycle-lookup=%s recycled=%t reuse=%s create=%s stat=%s dir-sync=%s wrap=%s recycler-pop=%s install=%s prev=%s new=%s residual=%s} | wal-close={total=%s eof=%s drain=%s sync=%s file-close=%s residual=%s}",
+		stats.WALRotationDuration,
+		breakdown.CloseDuration,
+		breakdown.MetricsMergeDuration,
+		breakdown.RecycleLookupDuration,
+		breakdown.Recycled,
+		breakdown.ReuseDuration,
+		breakdown.CreateDuration,
+		breakdown.StatDuration,
+		breakdown.DirSyncDuration,
+		breakdown.WrapDuration,
+		breakdown.RecyclerPopDuration,
+		breakdown.InstallDuration,
+		bytesForWriteStallDiagnostics(breakdown.PreviousLogSize),
+		bytesForWriteStallDiagnostics(breakdown.NewLogSize),
+		residual,
+		breakdown.CloseDuration,
+		breakdown.CloseEmitEOFTrailerDuration,
+		breakdown.CloseDrainDuration,
+		breakdown.CloseSyncDuration,
+		breakdown.CloseFileDuration,
+		closeResidual,
+	)
+}
+
 func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phase string) {
 	enabled, threshold := slowWriteDiagnosticsConfig()
 	if !enabled || batch == nil {
@@ -369,7 +497,7 @@ func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phas
 	d.mu.Unlock()
 
 	d.opts.Logger.Infof(
-		"slow write | phase=%s total=%s threshold=%s sync=%t no-sync-wait=%t | batch={count=%d repr=%s memtable-est=%s flushable=%t} | stats={semaphore=%s commit-pipeline-lock=%s db-lock=%s db-work=%s wal-queue=%s wal-write=%s memtable-stall=%s l0-stall=%s wal-rotation=%s memtable-apply=%s commit-wait=%s other=%s} | cache={block=%s/%s reserved=%s target=%s free-target=%s hit-rate=%.1f%% table-hit-rate=%.1f%% filter-utility=%.1f%% memtable-reserved=%s} | %s",
+		"slow write | phase=%s total=%s threshold=%s sync=%t no-sync-wait=%t | batch={count=%d repr=%s memtable-est=%s flushable=%t} | stats={semaphore=%s commit-pipeline-lock=%s db-lock=%s db-work=%s wal-queue=%s wal-write=%s memtable-stall=%s l0-stall=%s wal-rotation=%s memtable-apply=%s commit-wait=%s other=%s} | %s | %s | %s | cache={block=%s/%s reserved=%s target=%s free-target=%s hit-rate=%.1f%% table-hit-rate=%.1f%% filter-utility=%.1f%% memtable-reserved=%s} | %s",
 		phase,
 		stats.TotalDuration,
 		threshold,
@@ -391,6 +519,9 @@ func (d *DB) maybeLogSlowWrite(batch *Batch, syncWAL bool, noSyncWait bool, phas
 		stats.MemTableApplyDuration,
 		stats.CommitWaitDuration,
 		other,
+		formatSlowWriteDBWorkBreakdown(stats, dbWorkDuration),
+		formatSlowWriteWALWriteBreakdown(stats),
+		formatSlowWriteWALRotationBreakdown(stats),
 		signedBytesForWriteStallDiagnostics(blockCacheMetrics.Size),
 		signedBytesForWriteStallDiagnostics(blockCacheMetrics.MaxSize),
 		signedBytesForWriteStallDiagnostics(blockCacheMetrics.ReservedSize),

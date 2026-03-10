@@ -4,7 +4,10 @@
 
 package pebble
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // readState encapsulates the state needed for reading (the current version and
 // list of memtables). Loading the readState is done without grabbing
@@ -80,6 +83,16 @@ func (d *DB) loadReadState() *readState {
 // list of memtables. Requires DB.mu is held. If checker is not nil, it is
 // called after installing the new readState.
 func (d *DB) updateReadStateLocked(checker func(*DB) error) {
+	d.updateReadStateLockedWithStats(checker, nil)
+}
+
+func (d *DB) updateReadStateLockedWithStats(
+	checker func(*DB) error, stats *BatchCommitDBWorkBreakdown,
+) {
+	totalStart := time.Time{}
+	if stats != nil {
+		totalStart = time.Now()
+	}
 	s := &readState{
 		db:        d,
 		current:   d.mu.versions.currentVersion(),
@@ -91,16 +104,40 @@ func (d *DB) updateReadStateLocked(checker func(*DB) error) {
 		mem.readerRef()
 	}
 
+	lockWaitStart := time.Time{}
+	if stats != nil {
+		lockWaitStart = time.Now()
+	}
 	d.readState.Lock()
+	if stats != nil {
+		stats.ReadStateLockWaitDuration += time.Since(lockWaitStart)
+	}
+	installStart := time.Time{}
+	if stats != nil {
+		installStart = time.Now()
+	}
 	old := d.readState.val
 	d.readState.val = s
 	d.readState.Unlock()
+	if stats != nil {
+		stats.ReadStateInstallDuration += time.Since(installStart)
+	}
 	if checker != nil {
 		if err := checker(d); err != nil {
 			d.opts.Logger.Fatalf("checker failed with error: %s", err)
 		}
 	}
 	if old != nil {
+		oldUnrefStart := time.Time{}
+		if stats != nil {
+			oldUnrefStart = time.Now()
+		}
 		old.unrefLocked()
+		if stats != nil {
+			stats.ReadStateOldUnrefDuration += time.Since(oldUnrefStart)
+		}
+	}
+	if stats != nil {
+		stats.ReadStateDuration += time.Since(totalStart)
 	}
 }
