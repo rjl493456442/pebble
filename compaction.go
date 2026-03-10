@@ -1986,6 +1986,9 @@ func (d *DB) runIngestFlush(c *compaction) (*manifest.VersionEdit, error) {
 // d.mu must be held when calling this, but the mutex may be dropped and
 // re-acquired during the course of this method.
 func (d *DB) flush1() (bytesFlushed uint64, err error) {
+	flushStartTime := d.timeNow()
+	var flushTiming flushStepTiming
+
 	// NB: The flushable queue can contain flushables of type ingestedFlushable.
 	// The sstables in ingestedFlushable.files must be placed into the appropriate
 	// level in the lsm. Let's say the flushable queue contains a prefix of
@@ -2047,8 +2050,10 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 		}
 		inputBytes += d.mu.mem.queue[n].inuseBytes()
 	}
+	flushTiming.scanQueue = d.timeNow().Sub(flushStartTime)
 	if n == 0 {
 		// None of the immutable memtables are ready for flushing.
+		d.logFlushNoReadyLocked()
 		return 0, nil
 	}
 	if !ingest {
@@ -2095,17 +2100,52 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 	// anyway, we create the VersionEdit for ingestedFlushable outside of
 	// runCompaction. For all other flush cases, we construct the VersionEdit
 	// inside runCompaction.
+	d.logSlowFlushStepLocked(jobID, "run-compaction-begin", inputBytes)
+	runCompactionStart := d.timeNow()
+	// Start a background goroutine to periodically log flush progress while
+	// runCompaction is in progress (where d.mu is unlocked and I/O happens).
+	flushProgressDone := make(chan struct{})
+	if enabled, threshold := slowFlushDiagnosticsConfig(); enabled {
+		go func() {
+			ticker := time.NewTicker(threshold)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-flushProgressDone:
+					return
+				case <-ticker.C:
+					elapsed := time.Since(runCompactionStart)
+					bytesIterated := c.bytesIterated
+					d.opts.Logger.Infof(
+						"slow flush in-progress | job=%d step=run-compaction elapsed=%s "+
+							"bytes-iterated=%s input-bytes=%s",
+						jobID, elapsed,
+						bytesForWriteStallDiagnostics(bytesIterated),
+						bytesForWriteStallDiagnostics(inputBytes),
+					)
+				}
+			}
+		}()
+	}
 	if c.kind != compactionKindIngestedFlushable {
 		ve, pendingOutputs, stats, err = d.runCompaction(jobID, c)
 	}
+	close(flushProgressDone)
+	flushTiming.runCompaction = d.timeNow().Sub(runCompactionStart)
 
 	// Acquire logLock. This will be released either on an error, by way of
 	// logUnlock, or through a call to logAndApply if there is no error.
+	d.logSlowFlushStepLocked(jobID, "log-lock-begin", inputBytes)
+	logLockStart := d.timeNow()
 	d.mu.versions.logLock()
+	flushTiming.logLockWait = d.timeNow().Sub(logLockStart)
 
+	d.logSlowFlushStepLocked(jobID, "ingest-flush-begin", inputBytes)
+	ingestFlushStart := d.timeNow()
 	if c.kind == compactionKindIngestedFlushable {
 		ve, err = d.runIngestFlush(c)
 	}
+	flushTiming.runIngestFlush = d.timeNow().Sub(ingestFlushStart)
 
 	info := FlushInfo{
 		JobID:      jobID,
@@ -2166,8 +2206,11 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 				}
 			}
 		}
+		d.logSlowFlushStepLocked(jobID, "log-and-apply-begin", inputBytes)
+		logAndApplyStart := d.timeNow()
 		err = d.mu.versions.logAndApply(jobID, ve, c.metrics, false, /* forceRotation */
 			func() []compactionInfo { return d.getInProgressCompactionInfoLocked(c) })
+		flushTiming.logAndApply = d.timeNow().Sub(logAndApplyStart)
 		if err != nil {
 			info.Err = err
 			// TODO(peter): untested.
@@ -2202,16 +2245,26 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 		d.maybeUpdateDeleteCompactionHints(c)
 	}
 
+	d.logSlowFlushStepLocked(jobID, "clear-state-begin", inputBytes)
+	clearStateStart := d.timeNow()
 	d.clearCompactingState(c, err != nil)
 	delete(d.mu.compact.inProgress, c)
 	d.mu.versions.incrementCompactions(c.kind, c.extraLevels, c.pickerMetrics)
+	flushTiming.clearState = d.timeNow().Sub(clearStateStart)
 
 	var flushed flushableList
 	if err == nil {
+		updateMemQueueStart := d.timeNow()
 		flushed = d.mu.mem.queue[:n]
 		d.mu.mem.queue = d.mu.mem.queue[n:]
+		flushTiming.updateMemQueue = d.timeNow().Sub(updateMemQueueStart)
+
+		d.logSlowFlushStepLocked(jobID, "update-read-state-begin", inputBytes)
+		updateReadStateStart := d.timeNow()
 		d.updateReadStateLocked(d.opts.DebugCheck)
 		d.updateTableStatsLocked(ve.NewFiles)
+		flushTiming.updateReadState = d.timeNow().Sub(updateReadStateStart)
+
 		if ingest {
 			d.mu.versions.metrics.Flush.AsIngestCount++
 			for _, l := range c.metrics {
@@ -2261,17 +2314,27 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 	// the memtable reservation has been released by the time a synchronous
 	// flush returns. readerUnrefLocked may also produce obsolete files so the
 	// call to deleteObsoleteFiles must happen after it.
+	readerUnrefStart := d.timeNow()
 	for i := range flushed {
 		flushed[i].readerUnrefLocked(true)
 	}
+	flushTiming.readerUnref = d.timeNow().Sub(readerUnrefStart)
 
+	d.logSlowFlushStepLocked(jobID, "delete-obsolete-begin", inputBytes)
+	deleteObsoleteStart := d.timeNow()
 	d.deleteObsoleteFiles(jobID)
+	flushTiming.deleteObsolete = d.timeNow().Sub(deleteObsoleteStart)
 
 	// Mark all the memtables we flushed as flushed.
+	markFlushedStart := d.timeNow()
 	for i := range flushed {
 		close(flushed[i].flushed)
 	}
+	flushTiming.markFlushed = d.timeNow().Sub(markFlushedStart)
+
 	d.logFlushForWriteStallLocked(jobID, "end", inputs, inputBytes, ingest, err)
+	totalFlushDuration := d.timeNow().Sub(flushStartTime)
+	d.logSlowFlushBreakdownLocked(jobID, inputs, inputBytes, ingest, totalFlushDuration, flushTiming, err)
 
 	return bytesFlushed, err
 }

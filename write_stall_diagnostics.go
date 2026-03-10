@@ -18,8 +18,10 @@ import (
 const (
 	debugWriteStallsEnv             = "PEBBLE_DEBUG_WRITE_STALLS"
 	debugSlowWritesEnv              = "PEBBLE_DEBUG_SLOW_WRITES"
+	debugSlowFlushesEnv             = "PEBBLE_DEBUG_SLOW_FLUSHES"
 	writeStallDiagnosticLogInterval = 5 * time.Second
 	defaultSlowWriteLogThreshold    = 100 * time.Millisecond
+	defaultSlowFlushLogThreshold    = 5 * time.Second
 )
 
 var (
@@ -31,6 +33,10 @@ var (
 	slowWriteDiagnosticsOnce      sync.Once
 	slowWriteDiagnosticsEnabledV  bool
 	slowWriteDiagnosticThresholdV time.Duration
+
+	slowFlushDiagnosticsOnce      sync.Once
+	slowFlushDiagnosticsEnabledV  bool
+	slowFlushDiagnosticThresholdV time.Duration
 )
 
 func writeStallDiagnosticsEnabled() bool {
@@ -88,9 +94,152 @@ func slowWriteDiagnosticsConfig() (enabled bool, threshold time.Duration) {
 	return slowWriteDiagnosticsEnabledV, slowWriteDiagnosticThresholdV
 }
 
+func slowFlushDiagnosticsConfig() (enabled bool, threshold time.Duration) {
+	slowFlushDiagnosticsOnce.Do(func() {
+		value := strings.TrimSpace(os.Getenv(debugSlowFlushesEnv))
+		if value == "" {
+			return
+		}
+		switch strings.ToLower(value) {
+		case "0", "f", "false", "n", "no", "off":
+			return
+		case "1", "t", "true", "y", "yes", "on":
+			slowFlushDiagnosticsEnabledV = true
+			slowFlushDiagnosticThresholdV = defaultSlowFlushLogThreshold
+			return
+		}
+		d, err := time.ParseDuration(value)
+		if err != nil || d <= 0 {
+			slowFlushDiagnosticsEnabledV = true
+			slowFlushDiagnosticThresholdV = defaultSlowFlushLogThreshold
+			return
+		}
+		slowFlushDiagnosticsEnabledV = true
+		slowFlushDiagnosticThresholdV = d
+	})
+	return slowFlushDiagnosticsEnabledV, slowFlushDiagnosticThresholdV
+}
+
 func detailedCommitBreakdownEnabled() bool {
 	enabled, _ := slowWriteDiagnosticsConfig()
 	return enabled || writeStallDiagnosticsEnabled()
+}
+
+// flushStepTiming tracks the duration of each major step in a flush operation.
+type flushStepTiming struct {
+	scanQueue      time.Duration
+	runCompaction  time.Duration
+	logLockWait    time.Duration
+	runIngestFlush time.Duration
+	logAndApply    time.Duration
+	clearState     time.Duration
+	updateMemQueue time.Duration
+	updateReadState time.Duration
+	deleteObsolete time.Duration
+	readerUnref    time.Duration
+	markFlushed    time.Duration
+}
+
+func (d *DB) logSlowFlushStepLocked(jobID int, step string, inputBytes uint64) {
+	enabled, _ := slowFlushDiagnosticsConfig()
+	if !enabled {
+		return
+	}
+	d.opts.Logger.Infof(
+		"slow flush step | job=%d step=%s input-bytes=%s | %s",
+		jobID,
+		step,
+		bytesForWriteStallDiagnostics(inputBytes),
+		d.writeStallStateLocked(""),
+	)
+}
+
+func (d *DB) logSlowFlushStepUnlocked(jobID int, step string, inputBytes uint64) {
+	enabled, _ := slowFlushDiagnosticsConfig()
+	if !enabled {
+		return
+	}
+	d.opts.Logger.Infof(
+		"slow flush step | job=%d step=%s input-bytes=%s",
+		jobID,
+		step,
+		bytesForWriteStallDiagnostics(inputBytes),
+	)
+}
+
+func (d *DB) logSlowFlushBreakdownLocked(
+	jobID int, inputs int, inputBytes uint64, ingest bool, totalDuration time.Duration,
+	timing flushStepTiming, err error,
+) {
+	enabled, threshold := slowFlushDiagnosticsConfig()
+	if !enabled || totalDuration < threshold {
+		return
+	}
+	errText := "nil"
+	if err != nil {
+		errText = err.Error()
+	}
+	residual := totalDuration -
+		timing.scanQueue -
+		timing.runCompaction -
+		timing.logLockWait -
+		timing.runIngestFlush -
+		timing.logAndApply -
+		timing.clearState -
+		timing.updateMemQueue -
+		timing.updateReadState -
+		timing.deleteObsolete -
+		timing.readerUnref -
+		timing.markFlushed
+	if residual < 0 {
+		residual = 0
+	}
+	d.opts.Logger.Infof(
+		"slow flush breakdown | job=%d total=%s threshold=%s inputs=%d input-bytes=%s ingest=%t err=%s | "+
+			"scan-queue=%s run-compaction=%s log-lock-wait=%s ingest-flush=%s log-and-apply=%s "+
+			"clear-state=%s update-mem-queue=%s update-read-state=%s delete-obsolete=%s "+
+			"reader-unref=%s mark-flushed=%s residual=%s | %s",
+		jobID,
+		totalDuration,
+		threshold,
+		inputs,
+		bytesForWriteStallDiagnostics(inputBytes),
+		ingest,
+		errText,
+		timing.scanQueue,
+		timing.runCompaction,
+		timing.logLockWait,
+		timing.runIngestFlush,
+		timing.logAndApply,
+		timing.clearState,
+		timing.updateMemQueue,
+		timing.updateReadState,
+		timing.deleteObsolete,
+		timing.readerUnref,
+		timing.markFlushed,
+		residual,
+		d.writeStallStateLocked(""),
+	)
+}
+
+func (d *DB) logFlushNoReadyLocked() {
+	enabled, _ := slowFlushDiagnosticsConfig()
+	if !enabled {
+		return
+	}
+	if len(d.mu.mem.queue) <= 1 {
+		return
+	}
+	var entries []string
+	for i := 0; i < len(d.mu.mem.queue)-1 && i < 5; i++ {
+		entries = append(entries, d.describeWriteStallEntryLocked(i, d.mu.mem.queue[i]))
+	}
+	d.opts.Logger.Infof(
+		"slow flush no-ready | queue-len=%d flushing=%t | entries=[%s]",
+		len(d.mu.mem.queue),
+		d.mu.compact.flushing,
+		strings.Join(entries, " | "),
+	)
 }
 
 func flushableTypeLabel(f flushable) string {
