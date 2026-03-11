@@ -615,6 +615,9 @@ type compaction struct {
 
 	// flushing contains the flushables (aka memtables) that are being flushed.
 	flushing flushableList
+	// flushTiming, if non-nil, collects sub-step durations within runCompaction
+	// for slow flush diagnostics.
+	flushTiming *flushStepTiming
 	// bytesIterated contains the number of bytes that have been flushed/compacted.
 	bytesIterated uint64
 	// bytesWritten contains the number of bytes that have been written to outputs.
@@ -2078,6 +2081,9 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 
 	c := newFlush(d.opts, d.mu.versions.currentVersion(),
 		d.mu.versions.picker.getBaseLevel(), d.mu.mem.queue[:n], d.timeNow())
+	if enabled, _ := slowFlushDiagnosticsConfig(); enabled {
+		c.flushTiming = &flushTiming
+	}
 	d.addInProgressCompaction(c)
 
 	jobID := d.mu.nextJobID
@@ -3032,6 +3038,7 @@ func (d *DB) runCompaction(
 		}
 	}()
 
+	rcStepStart := time.Now()
 	snapshots := d.mu.snapshots.toSlice()
 	formatVers := d.FormatMajorVersion()
 
@@ -3055,6 +3062,11 @@ func (d *DB) runCompaction(
 	// Note the unusual order: Unlock and then Lock.
 	d.mu.Unlock()
 	defer d.mu.Lock()
+
+	if c.flushTiming != nil {
+		c.flushTiming.rcSetup = time.Since(rcStepStart)
+		rcStepStart = time.Now()
+	}
 
 	// Compactions use a pool of buffers to read blocks, avoiding polluting the
 	// block cache with blocks that will not be read again. We initialize the
@@ -3093,6 +3105,10 @@ func (d *DB) runCompaction(
 		c.elideRangeTombstone, d.opts.Experimental.IneffectualSingleDeleteCallback,
 		d.opts.Experimental.SingleDeleteInvariantViolationCallback,
 		d.FormatMajorVersion())
+
+	if c.flushTiming != nil {
+		c.flushTiming.rcNewInputIter = time.Since(rcStepStart)
+	}
 
 	var (
 		createdFiles    []base.DiskFileNum
@@ -3517,6 +3533,7 @@ func (d *DB) runCompaction(
 	// to a grandparent file largest key, or nil. Taken together, these
 	// progress guarantees ensure that eventually the input iterator will be
 	// exhausted and the range tombstone fragments will all be flushed.
+	writeLoopStart := time.Now()
 	for key, val := iter.First(); key != nil || !c.rangeDelFrag.Empty() || !c.rangeKeyFrag.Empty(); {
 		var firstKey []byte
 		if key != nil {
@@ -3648,6 +3665,10 @@ func (d *DB) runCompaction(
 		}
 	}
 
+	if c.flushTiming != nil {
+		c.flushTiming.rcWriteLoop = time.Since(writeLoopStart)
+	}
+
 	for _, cl := range c.inputs {
 		iter := cl.files.Iter()
 		for f := iter.First(); f != nil; f = iter.Next() {
@@ -3663,8 +3684,12 @@ func (d *DB) runCompaction(
 	// compactStats.
 	stats.countMissizedDels = iter.stats.countMissizedDels
 
+	syncStart := time.Now()
 	if err := d.objProvider.Sync(); err != nil {
 		return nil, pendingOutputs, stats, err
+	}
+	if c.flushTiming != nil {
+		c.flushTiming.rcSyncObjFS = time.Since(syncStart)
 	}
 
 	// Refresh the disk available statistic whenever a compaction/flush

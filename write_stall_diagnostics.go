@@ -127,17 +127,42 @@ func detailedCommitBreakdownEnabled() bool {
 
 // flushStepTiming tracks the duration of each major step in a flush operation.
 type flushStepTiming struct {
-	scanQueue      time.Duration
-	runCompaction  time.Duration
-	logLockWait    time.Duration
-	runIngestFlush time.Duration
-	logAndApply    time.Duration
-	clearState     time.Duration
-	updateMemQueue time.Duration
+	scanQueue       time.Duration
+	runCompaction   time.Duration
+	logLockWait     time.Duration
+	runIngestFlush  time.Duration
+	logAndApply     time.Duration
+	clearState      time.Duration
+	updateMemQueue  time.Duration
 	updateReadState time.Duration
-	deleteObsolete time.Duration
-	readerUnref    time.Duration
-	markFlushed    time.Duration
+	deleteObsolete  time.Duration
+	readerUnref     time.Duration
+	markFlushed     time.Duration
+
+	// Sub-steps within runCompaction.
+	rcSetup        time.Duration // snapshot, unlock, buffer pool init
+	rcNewInputIter time.Duration // c.newInputIter + newCompactionIter
+	rcWriteLoop    time.Duration // main key iteration + SST writes
+	rcSyncObjFS    time.Duration // objProvider.Sync
+}
+
+func (t *flushStepTiming) formatRunCompactionBreakdown() string {
+	residual := t.runCompaction -
+		t.rcSetup -
+		t.rcNewInputIter -
+		t.rcWriteLoop -
+		t.rcSyncObjFS
+	if residual < 0 {
+		residual = 0
+	}
+	return fmt.Sprintf(
+		"rc-setup=%s rc-new-input-iter=%s rc-write-loop=%s rc-sync=%s rc-residual=%s",
+		t.rcSetup,
+		t.rcNewInputIter,
+		t.rcWriteLoop,
+		t.rcSyncObjFS,
+		residual,
+	)
 }
 
 func (d *DB) logSlowFlushBreakdownLocked(
@@ -171,7 +196,7 @@ func (d *DB) logSlowFlushBreakdownLocked(
 		"slow flush breakdown | job=%d total=%s threshold=%s inputs=%d input-bytes=%s ingest=%t err=%s | "+
 			"scan-queue=%s run-compaction=%s log-lock-wait=%s ingest-flush=%s log-and-apply=%s "+
 			"clear-state=%s update-mem-queue=%s update-read-state=%s delete-obsolete=%s "+
-			"reader-unref=%s mark-flushed=%s residual=%s | %s",
+			"reader-unref=%s mark-flushed=%s residual=%s | %s | %s",
 		jobID,
 		totalDuration,
 		threshold,
@@ -191,6 +216,7 @@ func (d *DB) logSlowFlushBreakdownLocked(
 		timing.readerUnref,
 		timing.markFlushed,
 		residual,
+		timing.formatRunCompactionBreakdown(),
 		d.writeStallStateLocked(""),
 	)
 }
