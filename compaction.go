@@ -2120,13 +2120,30 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 				return
 			case <-timer.C:
 			}
-			d.opts.Logger.Infof(
-				"slow flush in-progress | job=%d step=run-compaction elapsed=%s "+
-					"bytes-iterated=%s input-bytes=%s",
-				jobID, time.Since(runCompactionStart),
-				bytesForWriteStallDiagnostics(c.bytesIterated),
-				bytesForWriteStallDiagnostics(inputBytes),
-			)
+			logProgress := func() {
+				elapsed := time.Since(runCompactionStart)
+				ft := c.flushTiming
+				var keys uint64
+				var iterTime, addTime, newOutTime, finishTime time.Duration
+				if ft != nil {
+					keys = ft.wlKeys
+					iterTime = ft.wlIterTime
+					addTime = ft.wlAddKeyTime
+					newOutTime = ft.wlNewOutputTime
+					finishTime = ft.wlFinishOutputTime
+				}
+				d.opts.Logger.Infof(
+					"slow flush in-progress | job=%d elapsed=%s "+
+						"bytes-iterated=%s input-bytes=%s keys=%d | "+
+						"iter=%s add-key=%s new-output=%s finish-output=%s",
+					jobID, elapsed,
+					bytesForWriteStallDiagnostics(c.bytesIterated),
+					bytesForWriteStallDiagnostics(inputBytes),
+					keys,
+					iterTime, addTime, newOutTime, finishTime,
+				)
+			}
+			logProgress()
 			// After the first log, log periodically.
 			ticker := time.NewTicker(threshold)
 			defer ticker.Stop()
@@ -2135,13 +2152,7 @@ func (d *DB) flush1() (bytesFlushed uint64, err error) {
 				case <-flushProgressDone:
 					return
 				case <-ticker.C:
-					d.opts.Logger.Infof(
-						"slow flush in-progress | job=%d step=run-compaction elapsed=%s "+
-							"bytes-iterated=%s input-bytes=%s",
-						jobID, time.Since(runCompactionStart),
-						bytesForWriteStallDiagnostics(c.bytesIterated),
-						bytesForWriteStallDiagnostics(inputBytes),
-					)
+					logProgress()
 				}
 			}
 		}()
@@ -3202,7 +3213,11 @@ func (d *DB) runCompaction(
 			return ErrCancelledCompaction
 		}
 		fileMeta := &fileMetadata{}
+		muLockStart := time.Now()
 		d.mu.Lock()
+		if c.flushTiming != nil {
+			c.flushTiming.wlNewOutputMuWait += time.Since(muLockStart)
+		}
 		fileNum := d.mu.versions.getNextFileNum()
 		fileMeta.FileNum = fileNum
 		pendingOutputs = append(pendingOutputs, fileMeta.PhysicalMeta())
@@ -3224,7 +3239,11 @@ func (d *DB) runCompaction(
 		createOpts := objstorage.CreateOptions{
 			PreferSharedStorage: remote.ShouldCreateShared(d.opts.Experimental.CreateOnShared, c.outputLevel.level),
 		}
+		createStart := time.Now()
 		writable, objMeta, err := d.objProvider.Create(ctx, fileTypeTable, fileNum.DiskFileNum(), createOpts)
+		if c.flushTiming != nil {
+			c.flushTiming.wlNewOutputCreate += time.Since(createStart)
+		}
 		if err != nil {
 			return err
 		}
@@ -3372,9 +3391,13 @@ func (d *DB) runCompaction(
 			pinnedKeySize = 0
 			pinnedValueSize = 0
 		}
+		twCloseStart := time.Now()
 		if err := tw.Close(); err != nil {
 			tw = nil
 			return err
+		}
+		if c.flushTiming != nil {
+			c.flushTiming.wlFinishTWClose += time.Since(twCloseStart)
 		}
 		d.opts.Experimental.CPUWorkPermissionGranter.CPUWorkDone(cpuWorkHandle)
 		cpuWorkHandle = nil
@@ -3534,7 +3557,14 @@ func (d *DB) runCompaction(
 	// progress guarantees ensure that eventually the input iterator will be
 	// exhausted and the range tombstone fragments will all be flushed.
 	writeLoopStart := time.Now()
-	for key, val := iter.First(); key != nil || !c.rangeDelFrag.Empty() || !c.rangeKeyFrag.Empty(); {
+	ft := c.flushTiming // may be nil for non-flush compactions
+
+	iterStart := time.Now()
+	key, val := iter.First()
+	if ft != nil {
+		ft.wlIterTime += time.Since(iterStart)
+	}
+	for ; key != nil || !c.rangeDelFrag.Empty() || !c.rangeKeyFrag.Empty(); {
 		var firstKey []byte
 		if key != nil {
 			firstKey = key.UserKey
@@ -3559,7 +3589,7 @@ func (d *DB) runCompaction(
 		splitterSuggestion := splitter.onNewOutput(firstKey)
 
 		// Each inner loop iteration processes one key from the input iterator.
-		for ; key != nil; key, val = iter.Next() {
+		for ; key != nil; {
 			if split := splitter.shouldSplitBefore(key, tw); split == splitNow {
 				break
 			}
@@ -3601,6 +3631,11 @@ func (d *DB) runCompaction(
 					copy(clone.Keys, s.Keys)
 					c.rangeDelFrag.Add(clone)
 				}
+				iterStart = time.Now()
+				key, val = iter.Next()
+				if ft != nil {
+					ft.wlIterTime += time.Since(iterStart)
+				}
 				continue
 			case InternalKeyKindRangeKeySet, InternalKeyKindRangeKeyUnset, InternalKeyKindRangeKeyDelete:
 				// Range keys are handled in the same way as range tombstones, except
@@ -3617,15 +3652,30 @@ func (d *DB) runCompaction(
 					copy(clone.Keys, s.Keys)
 					c.rangeKeyFrag.Add(clone)
 				}
+				iterStart = time.Now()
+				key, val = iter.Next()
+				if ft != nil {
+					ft.wlIterTime += time.Since(iterStart)
+				}
 				continue
 			}
 			if tw == nil {
+				newOutputStart := time.Now()
 				if err := newOutput(); err != nil {
 					return nil, pendingOutputs, stats, err
 				}
+				if ft != nil {
+					ft.wlNewOutputTime += time.Since(newOutputStart)
+					ft.wlOutputFiles++
+				}
 			}
+			addStart := time.Now()
 			if err := tw.AddWithForceObsolete(*key, val, iter.forceObsoleteDueToRangeDel); err != nil {
 				return nil, pendingOutputs, stats, err
+			}
+			if ft != nil {
+				ft.wlAddKeyTime += time.Since(addStart)
+				ft.wlKeys++
 			}
 			if iter.snapshotPinned {
 				// The kv pair we just added to the sstable was only surfaced by
@@ -3634,6 +3684,11 @@ func (d *DB) runCompaction(
 				pinnedCount++
 				pinnedKeySize += uint64(len(key.UserKey)) + base.InternalTrailerLen
 				pinnedValueSize += uint64(len(val))
+			}
+			iterStart = time.Now()
+			key, val = iter.Next()
+			if ft != nil {
+				ft.wlIterTime += time.Since(iterStart)
 			}
 		}
 
@@ -3660,8 +3715,12 @@ func (d *DB) runCompaction(
 		if key != nil && (splitKey == nil || c.cmp(splitKey, key.UserKey) > 0) {
 			splitKey = key.UserKey
 		}
+		finishStart := time.Now()
 		if err := finishOutput(splitKey); err != nil {
 			return nil, pendingOutputs, stats, err
+		}
+		if ft != nil {
+			ft.wlFinishOutputTime += time.Since(finishStart)
 		}
 	}
 

@@ -144,24 +144,56 @@ type flushStepTiming struct {
 	rcNewInputIter time.Duration // c.newInputIter + newCompactionIter
 	rcWriteLoop    time.Duration // main key iteration + SST writes
 	rcSyncObjFS    time.Duration // objProvider.Sync
+
+	// Detailed write-loop breakdown (accumulated across all output files).
+	wlIterTime         time.Duration // cumulative time in iter.First/Next
+	wlAddKeyTime       time.Duration // cumulative time in tw.AddWithForceObsolete
+	wlNewOutputTime    time.Duration // cumulative time in newOutput()
+	wlNewOutputMuWait  time.Duration // subset of newOutputTime: d.mu.Lock() wait
+	wlNewOutputCreate  time.Duration // subset of newOutputTime: objProvider.Create
+	wlFinishOutputTime time.Duration // cumulative time in finishOutput()
+	wlFinishTWClose    time.Duration // subset of finishOutputTime: tw.Close()
+	wlKeys             uint64        // total point keys written
+	wlOutputFiles      int           // number of output SSTs created
 }
 
 func (t *flushStepTiming) formatRunCompactionBreakdown() string {
-	residual := t.runCompaction -
+	rcResidual := t.runCompaction -
 		t.rcSetup -
 		t.rcNewInputIter -
 		t.rcWriteLoop -
 		t.rcSyncObjFS
-	if residual < 0 {
-		residual = 0
+	if rcResidual < 0 {
+		rcResidual = 0
+	}
+	wlResidual := t.rcWriteLoop -
+		t.wlIterTime -
+		t.wlAddKeyTime -
+		t.wlNewOutputTime -
+		t.wlFinishOutputTime
+	if wlResidual < 0 {
+		wlResidual = 0
 	}
 	return fmt.Sprintf(
-		"rc-setup=%s rc-new-input-iter=%s rc-write-loop=%s rc-sync=%s rc-residual=%s",
+		"rc={setup=%s new-input-iter=%s write-loop=%s sync=%s residual=%s} | "+
+			"write-loop={iter=%s add-key=%s new-output=%s finish-output=%s keys=%d files=%d residual=%s} | "+
+			"new-output={mu-wait=%s create=%s} | "+
+			"finish-output={tw-close=%s}",
 		t.rcSetup,
 		t.rcNewInputIter,
 		t.rcWriteLoop,
 		t.rcSyncObjFS,
-		residual,
+		rcResidual,
+		t.wlIterTime,
+		t.wlAddKeyTime,
+		t.wlNewOutputTime,
+		t.wlFinishOutputTime,
+		t.wlKeys,
+		t.wlOutputFiles,
+		wlResidual,
+		t.wlNewOutputMuWait,
+		t.wlNewOutputCreate,
+		t.wlFinishTWClose,
 	)
 }
 
