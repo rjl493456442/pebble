@@ -155,6 +155,15 @@ type flushStepTiming struct {
 	wlFinishTWClose    time.Duration // subset of finishOutputTime: tw.Close()
 	wlKeys             uint64        // total point keys written
 	wlOutputFiles      int           // number of output SSTs created
+
+	// tw.Close() sub-step breakdown (accumulated across all output files).
+	twcWriteQueueFinish time.Duration
+	twcLastDataBlock    time.Duration
+	twcFilterBlock      time.Duration
+	twcIndexBlock       time.Duration
+	twcValueBlocks      time.Duration
+	twcPropsBlock       time.Duration
+	twcWritableFinish   time.Duration // bufio.Flush + fsync + file.Close
 }
 
 func (t *flushStepTiming) formatRunCompactionBreakdown() string {
@@ -174,11 +183,23 @@ func (t *flushStepTiming) formatRunCompactionBreakdown() string {
 	if wlResidual < 0 {
 		wlResidual = 0
 	}
+	twcResidual := t.wlFinishTWClose -
+		t.twcWriteQueueFinish -
+		t.twcLastDataBlock -
+		t.twcFilterBlock -
+		t.twcIndexBlock -
+		t.twcValueBlocks -
+		t.twcPropsBlock -
+		t.twcWritableFinish
+	if twcResidual < 0 {
+		twcResidual = 0
+	}
 	return fmt.Sprintf(
 		"rc={setup=%s new-input-iter=%s write-loop=%s sync=%s residual=%s} | "+
 			"write-loop={iter=%s add-key=%s new-output=%s finish-output=%s keys=%d files=%d residual=%s} | "+
 			"new-output={mu-wait=%s create=%s} | "+
-			"finish-output={tw-close=%s}",
+			"finish-output={tw-close=%s} | "+
+			"tw-close={write-queue=%s last-data-block=%s filter=%s index=%s value-blocks=%s props=%s writable-finish=%s residual=%s}",
 		t.rcSetup,
 		t.rcNewInputIter,
 		t.rcWriteLoop,
@@ -194,6 +215,14 @@ func (t *flushStepTiming) formatRunCompactionBreakdown() string {
 		t.wlNewOutputMuWait,
 		t.wlNewOutputCreate,
 		t.wlFinishTWClose,
+		t.twcWriteQueueFinish,
+		t.twcLastDataBlock,
+		t.twcFilterBlock,
+		t.twcIndexBlock,
+		t.twcValueBlocks,
+		t.twcPropsBlock,
+		t.twcWritableFinish,
+		twcResidual,
 	)
 }
 

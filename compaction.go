@@ -3277,6 +3277,9 @@ func (d *DB) runCompaction(
 				(cpuWorkHandle.Permitted() || d.opts.Experimental.ForceWriterParallelism)
 
 		tw = sstable.NewWriter(writable, writerOpts, cacheOpts, &prevPointKey)
+		if c.flushTiming != nil {
+			tw.CollectCloseTiming = true
+		}
 
 		fileMeta.CreationTime = time.Now().Unix()
 		ve.NewFiles = append(ve.NewFiles, newFileEntry{
@@ -3398,6 +3401,14 @@ func (d *DB) runCompaction(
 		}
 		if c.flushTiming != nil {
 			c.flushTiming.wlFinishTWClose += time.Since(twCloseStart)
+			ct := &tw.CloseTiming
+			c.flushTiming.twcWriteQueueFinish += ct.WriteQueueFinish
+			c.flushTiming.twcLastDataBlock += ct.LastDataBlock
+			c.flushTiming.twcFilterBlock += ct.FilterBlock
+			c.flushTiming.twcIndexBlock += ct.IndexBlock
+			c.flushTiming.twcValueBlocks += ct.ValueBlocks
+			c.flushTiming.twcPropsBlock += ct.PropsBlock
+			c.flushTiming.twcWritableFinish += ct.WritableFinish
 		}
 		d.opts.Experimental.CPUWorkPermissionGranter.CPUWorkDone(cpuWorkHandle)
 		cpuWorkHandle = nil

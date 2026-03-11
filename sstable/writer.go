@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/errors"
@@ -25,6 +26,22 @@ import (
 	"github.com/cockroachdb/pebble/internal/rangekey"
 	"github.com/cockroachdb/pebble/objstorage"
 )
+
+// WriterCloseTiming records the time spent in each phase of Writer.Close().
+// Populated only when CollectCloseTiming is set to true on the Writer.
+type WriterCloseTiming struct {
+	WriteQueueFinish time.Duration // writeQueue.finish() - drain parallel writes
+	LastDataBlock    time.Duration // compress + write the final data block
+	FilterBlock      time.Duration // filter.finish() + write filter block
+	IndexBlock       time.Duration // write index block(s)
+	RangeDelBlock    time.Duration // write range deletion block
+	RangeKeyBlock    time.Duration // write range key block
+	ValueBlocks      time.Duration // valueBlockWriter.finish()
+	PropsBlock       time.Duration // write properties block
+	MetaindexBlock   time.Duration // write metaindex block
+	Footer           time.Duration // write footer
+	WritableFinish   time.Duration // writable.Finish() (flush + fsync + close)
+}
 
 // encodedBHPEstimatedSize estimates the size of the encoded BlockHandleWithProperties.
 // It would also be nice to account for the length of the data block properties here,
@@ -209,6 +226,13 @@ type Writer struct {
 	shortAttributeExtractor   base.ShortAttributeExtractor
 	requiredInPlaceValueBound UserKeyPrefixBound
 	valueBlockWriter          *valueBlockWriter
+
+	// CollectCloseTiming, when true, causes Close() to record per-step timing
+	// into CloseTiming.
+	CollectCloseTiming bool
+	// CloseTiming holds the per-step timing recorded during Close(). Only valid
+	// after Close() returns if CollectCloseTiming was true.
+	CloseTiming WriterCloseTiming
 }
 
 type pointKeyInfo struct {
@@ -1884,8 +1908,16 @@ func (w *Writer) Close() (err error) {
 	// finish must be called before we check for an error, because finish will
 	// block until every single task added to the writeQueue has been processed,
 	// and an error could be encountered while any of those tasks are processed.
+	ct := w.CollectCloseTiming
+	var stepStart time.Time
+	if ct {
+		stepStart = time.Now()
+	}
 	if err := w.coordination.writeQueue.finish(); err != nil {
 		return err
+	}
+	if ct {
+		w.CloseTiming.WriteQueueFinish = time.Since(stepStart)
 	}
 
 	if w.err != nil {
@@ -1908,6 +1940,9 @@ func (w *Writer) Close() (err error) {
 
 	// Finish the last data block, or force an empty data block if there
 	// aren't any data blocks at all.
+	if ct {
+		stepStart = time.Now()
+	}
 	if w.dataBlockBuf.dataBlock.nEntries > 0 || w.indexBlock.block.nEntries == 0 {
 		bh, err := w.writeBlock(w.dataBlockBuf.dataBlock.finish(), w.compression, &w.dataBlockBuf.blockBuf)
 		if err != nil {
@@ -1923,8 +1958,14 @@ func (w *Writer) Close() (err error) {
 		}
 	}
 	w.props.DataSize = w.meta.Size
+	if ct {
+		w.CloseTiming.LastDataBlock = time.Since(stepStart)
+	}
 
 	// Write the filter block.
+	if ct {
+		stepStart = time.Now()
+	}
 	var metaindex rawBlockWriter
 	metaindex.restartInterval = 1
 	if w.filter != nil {
@@ -1941,7 +1982,13 @@ func (w *Writer) Close() (err error) {
 		w.props.FilterPolicyName = w.filter.policyName()
 		w.props.FilterSize = bh.Length
 	}
+	if ct {
+		w.CloseTiming.FilterBlock = time.Since(stepStart)
+	}
 
+	if ct {
+		stepStart = time.Now()
+	}
 	var indexBH BlockHandle
 	if w.twoLevelIndex {
 		w.props.IndexType = twoLevelIndex
@@ -1964,10 +2011,16 @@ func (w *Writer) Close() (err error) {
 			return err
 		}
 	}
+	if ct {
+		w.CloseTiming.IndexBlock = time.Since(stepStart)
+	}
 
 	// Write the range-del block. The block handle must added to the meta index block
 	// after the properties block has been written. This is because the entries in the
 	// metaindex block must be sorted by key.
+	if ct {
+		stepStart = time.Now()
+	}
 	var rangeDelBH BlockHandle
 	if w.props.NumRangeDeletions > 0 {
 		if !w.rangeDelV1Format {
@@ -1989,9 +2042,15 @@ func (w *Writer) Close() (err error) {
 			return err
 		}
 	}
+	if ct {
+		w.CloseTiming.RangeDelBlock = time.Since(stepStart)
+	}
 
 	// Write the range-key block, flushing any remaining spans from the
 	// fragmenter first.
+	if ct {
+		stepStart = time.Now()
+	}
 	w.fragmenter.Finish()
 
 	var rangeKeyBH BlockHandle
@@ -2012,7 +2071,13 @@ func (w *Writer) Close() (err error) {
 			return err
 		}
 	}
+	if ct {
+		w.CloseTiming.RangeKeyBlock = time.Since(stepStart)
+	}
 
+	if ct {
+		stepStart = time.Now()
+	}
 	if w.valueBlockWriter != nil {
 		vbiHandle, vbStats, err := w.valueBlockWriter.finish(w, w.meta.Size)
 		if err != nil {
@@ -2026,6 +2091,9 @@ func (w *Writer) Close() (err error) {
 			metaindex.add(InternalKey{UserKey: []byte(metaValueIndexName)}, w.blockBuf.tmp[:n])
 		}
 	}
+	if ct {
+		w.CloseTiming.ValueBlocks = time.Since(stepStart)
+	}
 
 	// Add the range key block handle to the metaindex block. Note that we add the
 	// block handle to the metaindex block before the other meta blocks as the
@@ -2036,6 +2104,9 @@ func (w *Writer) Close() (err error) {
 		metaindex.add(InternalKey{UserKey: []byte(metaRangeKeyName)}, w.blockBuf.tmp[:n])
 	}
 
+	if ct {
+		stepStart = time.Now()
+	}
 	{
 		userProps := make(map[string]string)
 		for i := range w.propCollectors {
@@ -2079,6 +2150,9 @@ func (w *Writer) Close() (err error) {
 		n := encodeBlockHandle(w.blockBuf.tmp[:], bh)
 		metaindex.add(InternalKey{UserKey: []byte(metaPropertiesName)}, w.blockBuf.tmp[:n])
 	}
+	if ct {
+		w.CloseTiming.PropsBlock = time.Since(stepStart)
+	}
 
 	// Add the range deletion block handle to the metaindex block.
 	if w.props.NumRangeDeletions > 0 {
@@ -2098,12 +2172,21 @@ func (w *Writer) Close() (err error) {
 	// policy is nil. NoCompression is specified because a) RocksDB never
 	// compresses the meta-index block and b) RocksDB has some code paths which
 	// expect the meta-index block to not be compressed.
+	if ct {
+		stepStart = time.Now()
+	}
 	metaindexBH, err := w.writeBlock(metaindex.blockWriter.finish(), NoCompression, &w.blockBuf)
 	if err != nil {
 		return err
 	}
+	if ct {
+		w.CloseTiming.MetaindexBlock = time.Since(stepStart)
+	}
 
 	// Write the table footer.
+	if ct {
+		stepStart = time.Now()
+	}
 	footer := footer{
 		format:      w.tableFormat,
 		checksum:    w.blockBuf.checksummer.checksumType,
@@ -2116,6 +2199,9 @@ func (w *Writer) Close() (err error) {
 	}
 	w.meta.Size += uint64(len(encoded))
 	w.meta.Properties = w.props
+	if ct {
+		w.CloseTiming.Footer = time.Since(stepStart)
+	}
 
 	// Check that the features present in the table are compatible with the format
 	// configured for the table.
@@ -2123,11 +2209,17 @@ func (w *Writer) Close() (err error) {
 		return err
 	}
 
+	if ct {
+		stepStart = time.Now()
+	}
 	if err := w.writable.Finish(); err != nil {
 		w.writable = nil
 		return err
 	}
 	w.writable = nil
+	if ct {
+		w.CloseTiming.WritableFinish = time.Since(stepStart)
+	}
 
 	w.dataBlockBuf.clear()
 	dataBlockBufPool.Put(w.dataBlockBuf)
