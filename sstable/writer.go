@@ -27,6 +27,18 @@ import (
 	"github.com/cockroachdb/pebble/objstorage"
 )
 
+// WriterAddPointTiming records the time spent in each sub-operation of
+// addPoint, accumulated across all calls. Populated only when
+// CollectAddPointTiming is set to true on the Writer.
+type WriterAddPointTiming struct {
+	FlushCount     int           // number of data block flushes
+	Compression    time.Duration // subset of flush: compressAndChecksum
+	WriteBlock     time.Duration // subset of flush: writing compressed block (includes I/O + maybeSync)
+	PropCollectors time.Duration // time in propCollectors.Add + blockPropCollectors.Add
+	FilterAdd      time.Duration // time in maybeAddToFilter
+	BlockAdd       time.Duration // time in dataBlock.addWithOptionalValuePrefix
+}
+
 // WriterCloseTiming records the time spent in each phase of Writer.Close().
 // Populated only when CollectCloseTiming is set to true on the Writer.
 type WriterCloseTiming struct {
@@ -233,6 +245,12 @@ type Writer struct {
 	// CloseTiming holds the per-step timing recorded during Close(). Only valid
 	// after Close() returns if CollectCloseTiming was true.
 	CloseTiming WriterCloseTiming
+
+	// CollectAddPointTiming, when true, causes addPoint to record per-step
+	// timing into AddPointTiming.
+	CollectAddPointTiming bool
+	// AddPointTiming holds accumulated per-step timing for addPoint calls.
+	AddPointTiming WriterAddPointTiming
 }
 
 type pointKeyInfo struct {
@@ -1008,33 +1026,64 @@ func (w *Writer) addPoint(key InternalKey, value []byte, forceObsolete bool) err
 		return err
 	}
 
-	for i := range w.propCollectors {
-		if err := w.propCollectors[i].Add(key, value); err != nil {
-			w.err = err
-			return err
+	if w.CollectAddPointTiming {
+		propStart := time.Now()
+		for i := range w.propCollectors {
+			if err := w.propCollectors[i].Add(key, value); err != nil {
+				w.err = err
+				return err
+			}
 		}
-	}
-	for i := range w.blockPropCollectors {
-		v := value
-		if addPrefixToValueStoredWithKey {
-			// Values for SET are not required to be in-place, and in the future may
-			// not even be read by the compaction, so pass nil values. Block
-			// property collectors in such Pebble DB's must not look at the value.
-			v = nil
+		for i := range w.blockPropCollectors {
+			v := value
+			if addPrefixToValueStoredWithKey {
+				v = nil
+			}
+			if err := w.blockPropCollectors[i].Add(key, v); err != nil {
+				w.err = err
+				return err
+			}
 		}
-		if err := w.blockPropCollectors[i].Add(key, v); err != nil {
-			w.err = err
-			return err
+		if w.tableFormat >= TableFormatPebblev4 {
+			w.obsoleteCollector.AddPoint(isObsolete)
 		}
-	}
-	if w.tableFormat >= TableFormatPebblev4 {
-		w.obsoleteCollector.AddPoint(isObsolete)
-	}
+		w.AddPointTiming.PropCollectors += time.Since(propStart)
 
-	w.maybeAddToFilter(key.UserKey)
-	w.dataBlockBuf.dataBlock.addWithOptionalValuePrefix(
-		key, isObsolete, valueStoredWithKey, maxSharedKeyLen, addPrefixToValueStoredWithKey, prefix,
-		setHasSameKeyPrefix)
+		filterStart := time.Now()
+		w.maybeAddToFilter(key.UserKey)
+		w.AddPointTiming.FilterAdd += time.Since(filterStart)
+
+		blockAddStart := time.Now()
+		w.dataBlockBuf.dataBlock.addWithOptionalValuePrefix(
+			key, isObsolete, valueStoredWithKey, maxSharedKeyLen, addPrefixToValueStoredWithKey, prefix,
+			setHasSameKeyPrefix)
+		w.AddPointTiming.BlockAdd += time.Since(blockAddStart)
+	} else {
+		for i := range w.propCollectors {
+			if err := w.propCollectors[i].Add(key, value); err != nil {
+				w.err = err
+				return err
+			}
+		}
+		for i := range w.blockPropCollectors {
+			v := value
+			if addPrefixToValueStoredWithKey {
+				v = nil
+			}
+			if err := w.blockPropCollectors[i].Add(key, v); err != nil {
+				w.err = err
+				return err
+			}
+		}
+		if w.tableFormat >= TableFormatPebblev4 {
+			w.obsoleteCollector.AddPoint(isObsolete)
+		}
+
+		w.maybeAddToFilter(key.UserKey)
+		w.dataBlockBuf.dataBlock.addWithOptionalValuePrefix(
+			key, isObsolete, valueStoredWithKey, maxSharedKeyLen, addPrefixToValueStoredWithKey, prefix,
+			setHasSameKeyPrefix)
+	}
 
 	w.meta.updateSeqNum(key.SeqNum())
 
@@ -1416,13 +1465,21 @@ func (w *Writer) maybeAddToFilter(key []byte) {
 }
 
 func (w *Writer) flush(key InternalKey) error {
+	ct := w.CollectAddPointTiming
+	var stepStart time.Time
 	// We're finishing a data block.
 	err := w.finishDataBlockProps(w.dataBlockBuf)
 	if err != nil {
 		return err
 	}
 	w.dataBlockBuf.finish()
+	if ct {
+		stepStart = time.Now()
+	}
 	w.dataBlockBuf.compressAndChecksum(w.compression)
+	if ct {
+		w.AddPointTiming.Compression += time.Since(stepStart)
+	}
 	// Since dataBlockEstimates.addInflightDataBlock was never called, the
 	// inflightSize is set to 0.
 	w.coordination.sizeEstimate.dataBlockCompressed(len(w.dataBlockBuf.compressed), 0)
@@ -1481,10 +1538,17 @@ func (w *Writer) flush(key InternalKey) error {
 	w.indexBlock.addInflight(writeTask.indexInflightSize)
 
 	w.dataBlockBuf = nil
+	if ct {
+		stepStart = time.Now()
+	}
 	if w.coordination.parallelismEnabled {
 		w.coordination.writeQueue.add(writeTask)
 	} else {
 		err = w.coordination.writeQueue.addSync(writeTask)
+	}
+	if ct {
+		w.AddPointTiming.WriteBlock += time.Since(stepStart)
+		w.AddPointTiming.FlushCount++
 	}
 	w.dataBlockBuf = newDataBlockBuf(w.restartInterval, w.checksumType)
 

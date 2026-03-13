@@ -164,6 +164,14 @@ type flushStepTiming struct {
 	twcValueBlocks      time.Duration
 	twcPropsBlock       time.Duration
 	twcWritableFinish   time.Duration // bufio.Flush + fsync + file.Close
+
+	// add-key sub-step breakdown (accumulated across all output files).
+	akFlushCount    int           // number of data block flushes
+	akCompression   time.Duration // subset of flush: compressAndChecksum
+	akWriteBlock    time.Duration // subset of flush: writing compressed block (includes I/O + maybeSync)
+	akPropCollector time.Duration // time in property collectors
+	akFilterAdd     time.Duration // time in filter.addKey
+	akBlockAdd      time.Duration // time in dataBlock.add
 }
 
 func (t *flushStepTiming) formatRunCompactionBreakdown() string {
@@ -194,12 +202,22 @@ func (t *flushStepTiming) formatRunCompactionBreakdown() string {
 	if twcResidual < 0 {
 		twcResidual = 0
 	}
+	akResidual := t.wlAddKeyTime -
+		t.akCompression -
+		t.akWriteBlock -
+		t.akPropCollector -
+		t.akFilterAdd -
+		t.akBlockAdd
+	if akResidual < 0 {
+		akResidual = 0
+	}
 	return fmt.Sprintf(
 		"rc={setup=%s new-input-iter=%s write-loop=%s sync=%s residual=%s} | "+
 			"write-loop={iter=%s add-key=%s new-output=%s finish-output=%s keys=%d files=%d residual=%s} | "+
 			"new-output={mu-wait=%s create=%s} | "+
 			"finish-output={tw-close=%s} | "+
-			"tw-close={write-queue=%s last-data-block=%s filter=%s index=%s value-blocks=%s props=%s writable-finish=%s residual=%s}",
+			"tw-close={write-queue=%s last-data-block=%s filter=%s index=%s value-blocks=%s props=%s writable-finish=%s residual=%s} | "+
+			"add-key={flush-count=%d compression=%s write-block=%s prop-collectors=%s filter-add=%s block-add=%s residual=%s}",
 		t.rcSetup,
 		t.rcNewInputIter,
 		t.rcWriteLoop,
@@ -223,6 +241,13 @@ func (t *flushStepTiming) formatRunCompactionBreakdown() string {
 		t.twcPropsBlock,
 		t.twcWritableFinish,
 		twcResidual,
+		t.akFlushCount,
+		t.akCompression,
+		t.akWriteBlock,
+		t.akPropCollector,
+		t.akFilterAdd,
+		t.akBlockAdd,
+		akResidual,
 	)
 }
 

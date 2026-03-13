@@ -3279,6 +3279,7 @@ func (d *DB) runCompaction(
 		tw = sstable.NewWriter(writable, writerOpts, cacheOpts, &prevPointKey)
 		if c.flushTiming != nil {
 			tw.CollectCloseTiming = true
+			tw.CollectAddPointTiming = true
 		}
 
 		fileMeta.CreationTime = time.Now().Unix()
@@ -3409,6 +3410,13 @@ func (d *DB) runCompaction(
 			c.flushTiming.twcValueBlocks += ct.ValueBlocks
 			c.flushTiming.twcPropsBlock += ct.PropsBlock
 			c.flushTiming.twcWritableFinish += ct.WritableFinish
+			at := &tw.AddPointTiming
+			c.flushTiming.akFlushCount += at.FlushCount
+			c.flushTiming.akCompression += at.Compression
+			c.flushTiming.akWriteBlock += at.WriteBlock
+			c.flushTiming.akPropCollector += at.PropCollectors
+			c.flushTiming.akFilterAdd += at.FilterAdd
+			c.flushTiming.akBlockAdd += at.BlockAdd
 		}
 		d.opts.Experimental.CPUWorkPermissionGranter.CPUWorkDone(cpuWorkHandle)
 		cpuWorkHandle = nil
