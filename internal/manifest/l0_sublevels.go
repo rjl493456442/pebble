@@ -231,6 +231,46 @@ type L0Compaction struct {
 // There is no limit to the number of sublevels that can exist in L0 at any
 // time, however read and compaction performance is best when there are as few
 // sublevels as possible.
+// L0CompactionLimits bounds how far an L0 compaction candidate may grow as
+// sublevels are stacked onto its seed interval. A deeper candidate reduces the
+// stack depth by more per byte of the base level it disturbs, but a larger one
+// runs longer and holds its files, and every other L0 compaction that would
+// have touched them, for the duration. Zero values select the defaults, which
+// are the figures pebble used before the limits were adjustable.
+type L0CompactionLimits struct {
+	// MaxBytes is the hard ceiling on a candidate's L0 bytes: stacking stops
+	// at the first candidate that exceeds it. Defaults to 500MB.
+	MaxBytes uint64
+	// GrowthLimit is the most one added sublevel may multiply the candidate's
+	// bytes by before stacking stops. Defaults to 1.5.
+	GrowthLimit float64
+	// GrowthMinBytes is the candidate size below which GrowthLimit is not
+	// applied, so that small candidates may grow freely. Defaults to 100MB.
+	GrowthMinBytes uint64
+}
+
+func (l L0CompactionLimits) withDefaults() L0CompactionLimits {
+	if l.MaxBytes == 0 {
+		l.MaxBytes = 500 << 20
+	}
+	if l.GrowthLimit <= 0 {
+		l.GrowthLimit = 1.5
+	}
+	if l.GrowthMinBytes == 0 {
+		l.GrowthMinBytes = 100 << 20
+	}
+	return l
+}
+
+// exceeded reports whether a candidate that has grown from prev to curr L0
+// bytes by stacking one more sublevel has grown past the limits, in which case
+// the previous candidate should be used instead.
+func (l L0CompactionLimits) exceeded(prev, curr uint64) bool {
+	l = l.withDefaults()
+	return curr > l.GrowthMinBytes &&
+		(float64(curr)/float64(prev) > l.GrowthLimit || curr > l.MaxBytes)
+}
+
 type l0Sublevels struct {
 	// Levels are ordered from oldest sublevel to youngest sublevel in the
 	// outer slice, and the inner slice contains non-overlapping files for
@@ -242,6 +282,10 @@ type l0Sublevels struct {
 
 	cmp       Compare
 	formatKey base.FormatKey
+
+	// limits bounds the growth of compaction candidates picked from this L0.
+	// Set by the owning L0Organizer; the zero value means the defaults.
+	limits L0CompactionLimits
 
 	fileBytes uint64
 	// All the L0 files, ordered from oldest to youngest.
@@ -1577,11 +1621,16 @@ func (s *l0Sublevels) baseCompactionUsingSeed(
 		// still having a hard limit. Note that if this is the first compaction
 		// candidate to reach a stack depth reduction of minCompactionDepth or
 		// higher, this candidate will be chosen regardless.
+		//
+		// Those three figures are the defaults of L0CompactionLimits, which
+		// the owning L0Organizer may override from the DB options. Note also
+		// that they only bound growth: a candidate that stops extending because
+		// the next sublevel holds a file already being compacted stops short
+		// of them regardless of how they are set.
 		if lastCandidate == nil {
 			lastCandidate = &L0CompactionFiles{}
 		} else if lastCandidate.seedIntervalStackDepthReduction >= minCompactionDepth &&
-			c.fileBytes > 100<<20 &&
-			(float64(c.fileBytes)/float64(lastCandidate.fileBytes) > 1.5 || c.fileBytes > 500<<20) {
+			s.limits.exceeded(lastCandidate.fileBytes, c.fileBytes) {
 			break
 		}
 		*lastCandidate = *c
@@ -1780,8 +1829,7 @@ func (s *l0Sublevels) intraL0CompactionUsingSeed(
 		if lastCandidate == nil {
 			lastCandidate = &L0CompactionFiles{}
 		} else if lastCandidate.seedIntervalStackDepthReduction >= minCompactionDepth &&
-			c.fileBytes > 100<<20 &&
-			(float64(c.fileBytes)/float64(lastCandidate.fileBytes) > 1.5 || c.fileBytes > 500<<20) {
+			s.limits.exceeded(lastCandidate.fileBytes, c.fileBytes) {
 			break
 		}
 		*lastCandidate = *c
@@ -2099,6 +2147,7 @@ type L0Organizer struct {
 	formatKey       base.FormatKey
 	flushSplitBytes int64
 	generation      int64
+	limits          L0CompactionLimits
 
 	// levelMetadata is the current L0.
 	levelMetadata LevelMetadata
@@ -2132,6 +2181,17 @@ func NewL0Organizer(comparer *base.Comparer, flushSplitBytes int64) *L0Organizer
 		panic(errors.AssertionFailedf("error generating empty L0Sublevels: %s", err))
 	}
 	return o
+}
+
+// SetCompactionLimits bounds how far the L0 compaction candidates picked from
+// this organizer's L0 may grow. It applies to the current L0Sublevels and to
+// every one the organizer builds from here on. The zero value restores the
+// defaults.
+func (o *L0Organizer) SetCompactionLimits(l L0CompactionLimits) {
+	o.limits = l
+	if o.l0Sublevels != nil {
+		o.l0Sublevels.limits = l
+	}
 }
 
 // PrepareUpdate is the first step in the two-step process to update the
@@ -2169,6 +2229,7 @@ func (o *L0Organizer) PrepareUpdate(bve *BulkVersionEdit, newVersion *Version) L
 	if err != nil {
 		panic(errors.AssertionFailedf("error generating L0Sublevels: %s", err))
 	}
+	newSublevels.limits = o.limits
 
 	return L0PreparedUpdate{
 		generation:   o.generation,
@@ -2209,6 +2270,7 @@ func (o *L0Organizer) PerformUpdate(prepared L0PreparedUpdate, newVersion *Versi
 			if err != nil {
 				panic(fmt.Sprintf("error when regenerating sublevels: %s", err))
 			}
+			expectedSublevels.limits = o.limits
 			s1 := describeSublevels(o.formatKey, false /* verbose */, expectedSublevels.Levels)
 			s2 := describeSublevels(o.formatKey, false /* verbose */, newSublevels.Levels)
 			if s1 != s2 {
@@ -2235,6 +2297,7 @@ func (o *L0Organizer) ResetForTesting(v *Version) {
 	if err != nil {
 		panic(errors.AssertionFailedf("error generating L0Sublevels: %s", err))
 	}
+	o.l0Sublevels.limits = o.limits
 	v.L0SublevelFiles = o.l0Sublevels.Levels
 }
 

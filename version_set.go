@@ -155,6 +155,11 @@ func (vs *versionSet) init(
 	vs.dynamicBaseLevel = true
 	vs.versions.Init(mu)
 	vs.latest.l0Organizer = manifest.NewL0Organizer(opts.Comparer, opts.FlushSplitBytes)
+	vs.latest.l0Organizer.SetCompactionLimits(manifest.L0CompactionLimits{
+		MaxBytes:       opts.Experimental.L0CompactionMaxBytes,
+		GrowthLimit:    opts.Experimental.L0CompactionGrowthLimit,
+		GrowthMinBytes: opts.Experimental.L0CompactionGrowthMinBytes,
+	})
 	vs.latest.virtualBackings = manifest.MakeVirtualBackings()
 	vs.obsoleteFn = vs.addObsoleteLocked
 	vs.zombieTables = makeZombieObjects()

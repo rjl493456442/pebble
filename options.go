@@ -586,6 +586,26 @@ type Options struct {
 		// concurrency slots as determined by the two options is chosen.
 		CompactionDebtConcurrency uint64
 
+		// L0CompactionMaxBytes is the hard ceiling on the L0 bytes one L0
+		// compaction may take on: as sublevels are stacked onto a candidate's
+		// seed interval, stacking stops at the first candidate to exceed it.
+		// A deeper candidate carries more of L0 down per byte of the base level
+		// it rewrites, but runs longer and holds its files, and every other L0
+		// compaction that would have touched them, while it does. Zero selects
+		// the default of 500MB.
+		L0CompactionMaxBytes uint64
+
+		// L0CompactionGrowthLimit is the most that stacking one more sublevel
+		// onto an L0 compaction candidate may multiply its bytes by before
+		// stacking stops, once the candidate is larger than
+		// L0CompactionGrowthMinBytes. Zero selects the default of 1.5.
+		L0CompactionGrowthLimit float64
+
+		// L0CompactionGrowthMinBytes is the L0 compaction candidate size below
+		// which L0CompactionGrowthLimit is not applied, so that small
+		// candidates grow freely. Zero selects the default of 100MB.
+		L0CompactionGrowthMinBytes uint64
+
 		// CompactionGarbageFractionForMaxConcurrency is the fraction of garbage
 		// due to DELs and RANGEDELs that causes MaxConcurrentCompactions to be
 		// allowed. Concurrent compactions are allowed in a linear manner upto
@@ -1397,6 +1417,15 @@ func (o *Options) EnsureDefaults() {
 	}
 	if o.Experimental.CompactionDebtConcurrency <= 0 {
 		o.Experimental.CompactionDebtConcurrency = 1 << 30 // 1 GB
+	}
+	if o.Experimental.L0CompactionMaxBytes == 0 {
+		o.Experimental.L0CompactionMaxBytes = 500 << 20
+	}
+	if o.Experimental.L0CompactionGrowthLimit <= 0 {
+		o.Experimental.L0CompactionGrowthLimit = 1.5
+	}
+	if o.Experimental.L0CompactionGrowthMinBytes == 0 {
+		o.Experimental.L0CompactionGrowthMinBytes = 100 << 20
 	}
 	if o.Experimental.CompactionGarbageFractionForMaxConcurrency == nil {
 		// When 40% of the DB is garbage, the compaction concurrency is at the
